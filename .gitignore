@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Local env files
+.env
+.env.*
+!.env.deploy.example
+
+# Service account credentials (local only)
+gbpims.json
+
+# Netlify local state
+.netlify/
+
+# Editor/OS
+.DS_Store
+*.local
+*.log

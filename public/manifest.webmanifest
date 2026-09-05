@@ -1,0 +1,16 @@
+{
+  "name": "GBPIMS — Guwahati Biotech Park Incubatee Management System",
+  "short_name": "GBPIMS",
+  "description": "Manage rentable spaces, tenants, rent, electricity billing and payments for Guwahati Biotech Park.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#63B900",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
