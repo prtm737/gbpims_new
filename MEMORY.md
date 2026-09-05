@@ -66,8 +66,13 @@ push, no rebase/squash of pushed commits).
 - Cause: GitHub Actions deploy (added 2026-09-04) passed only server-side
   `SUPABASE_*` env at build; client bundle had no `VITE_SUPABASE_URL` /
   `VITE_SUPABASE_PUBLISHABLE_KEY`, so `authClient` threw on first use.
-- Fix: `deploy.yml` now sets `VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY`
-  from the existing secrets and fails the build if they're empty.
+- Fix: `deploy.yml` now writes a `.env` file with the `VITE_*` values before
+  `npm run build` (process.env alone did NOT embed in CI builds — the
+  known-good local build had a `.env` file) and fails the build if the
+  secrets are empty or if the built bundle lacks the Supabase URL.
+- Gotcha: after a "successful" Actions run, verify the live bundle actually
+  contains `VITE_SUPABASE_URL` — identical asset hash across deploys means
+  the env never reached the build.
 - Lesson: any env the browser needs must be present at BUILD time, not just
   runtime.
 

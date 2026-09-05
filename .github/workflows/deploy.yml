@@ -31,7 +31,11 @@ jobs:
         run: |
           test -n "$VITE_SUPABASE_URL" || { echo "::error::SUPABASE_URL secret is not set"; exit 1; }
           test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" || { echo "::error::SUPABASE_PUBLISHABLE_KEY secret is not set"; exit 1; }
+          # process.env alone did not embed in CI builds; the known-good local
+          # build had these in a .env file, so materialize it before building.
+          printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_PUBLISHABLE_KEY=%s\n' "$SUPABASE_URL" "$SUPABASE_PUBLISHABLE_KEY" > .env
           npm run build
+          grep -q "$SUPABASE_URL" dist/assets/*.js || { echo "::error::client bundle missing Supabase URL - auth pages would crash"; exit 1; }
 
       - name: Deploy to Netlify
         run: |
