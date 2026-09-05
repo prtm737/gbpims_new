@@ -19,12 +19,19 @@ jobs:
         run: npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Build
-        run: npm run build
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # Client bundle reads these via import.meta.env at build time;
+          # without them authClient throws "Authentication is not configured."
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL" || { echo "::error::SUPABASE_URL secret is not set"; exit 1; }
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" || { echo "::error::SUPABASE_PUBLISHABLE_KEY secret is not set"; exit 1; }
+          npm run build
 
       - name: Deploy to Netlify
         run: |
