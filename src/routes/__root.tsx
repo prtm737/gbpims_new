@@ -137,6 +137,14 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  useEffect(() => {
+    if (import.meta.env.PROD && "serviceWorker" in navigator) {
+      const reg = () => navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      if (document.readyState === "complete") void reg();
+      else window.addEventListener("load", () => void reg(), { once: true });
+    }
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}

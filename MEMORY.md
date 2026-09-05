@@ -60,6 +60,19 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-05 — Speed + installable PWA
+- `router.tsx`: `defaultPreload: "intent"` + `defaultPreloadStaleTime: 30s` —
+  route chunks/loaders prefetch on hover/touch.
+- `_authenticated/route.tsx`: guard now uses `getSession()` (local, no network)
+  instead of `getUser()` (server round-trip) — snappier entry into the app.
+- Added `public/sw.js` (registered in `__root.tsx` in PROD only): cache-first
+  for `/assets/*` (immutable hashed), network-first for navigations with
+  offline fallback; `/_serverFn/` and `/api/` are never cached.
+  Bump `VERSION` in sw.js only if the SW logic itself changes.
+- `manifest.webmanifest`: added `id`, `lang`, `categories`, app shortcuts.
+  Install via Chrome "Add to home screen" on Android.
+- Bundle was already well-split (jspdf/recharts lazy) — no changes needed.
+
 ### 2026-09-05 — Fixed production auth crash ("This page didn't load")
 - Symptom: `/` fine, `/auth` + `/dashboard` showed the error page on
   gbpims.netlify.app.
