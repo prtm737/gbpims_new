@@ -60,6 +60,19 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-07 — Fixed 400 on Format workbook after rename deploy
+- Symptom: "Unable to parse range: ElectricityBills!A1:AG5000" when pressing
+  Format workbook; sheet unchanged.
+- Cause: migrateLedgerColumnOrder ran before the ElectricityBills tab was
+  guaranteed to exist (rename step had failed silently on a stale sheet list
+  / undefined sheetId), and the migration read was not wrapped.
+- Fixes in ensureWorkbook:
+  - Rename now re-fetches meta first, requires a numeric sheetId, skips if
+    ElectricityBills already exists (concurrency-safe).
+  - If ElectricityBills is still missing, salvage step creates it and copies
+    PowerLedger data verbatim before migrating.
+  - migrateLedgerColumnOrder fully wrapped — failures are warnings only.
+
 ### 2026-09-07 — Renamed PowerLedger → ElectricityBills + simplified sheet
 - TABS.ledger renamed: "PowerLedger" → "ElectricityBills" (user expectation).
   ensureWorkbook: deletes the empty old ElectricityBills leftover tab, then

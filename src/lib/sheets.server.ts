@@ -873,7 +873,8 @@ async function ensureDashboard(
  * Runs inside ensureWorkbook, before headers are rewritten.
  */
 async function migrateLedgerColumnOrder(spreadsheetId: string): Promise<void> {
-  const OLD = [
+  try {
+    const OLD = [
     "bill_id",
     "client_id",
     "client_name",
@@ -935,6 +936,12 @@ async function migrateLedgerColumnOrder(spreadsheetId: string): Promise<void> {
     },
   );
   invalidateWorkbookCache(spreadsheetId);
+  } catch (err) {
+    // Cosmetic-only step: never let a migration hiccup break the upgrade.
+    console.warn(
+      `[sheets] ledger column migration skipped: ${(err as Error).message.slice(0, 160)}`,
+    );
+  }
 }
 
 export async function ensureWorkbook(
@@ -970,19 +977,33 @@ export async function ensureWorkbook(
         }
       }
       if (!findSheet("ElectricityBills")) {
-        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
-          method: "POST",
-          body: JSON.stringify({
-            requests: [
-              {
-                renameSheet: {
-                  sheetId: powerLedger.properties?.sheetId,
-                  newTitle: TABS.ledger,
+        // Re-fetch so a concurrent run's rename is not double-applied, and
+        // never rename with an unknown/undefined sheet id.
+        meta = await sheetsApi<MetaIds>(
+          `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
+        );
+        const freshLedger = (meta.sheets ?? []).find(
+          (s) => s.properties?.title === "PowerLedger",
+        );
+        const freshElec = (meta.sheets ?? []).find(
+          (s) => s.properties?.title === "ElectricityBills",
+        );
+        const targetId = freshLedger?.properties?.sheetId;
+        if (freshLedger && freshElec === undefined && typeof targetId === "number") {
+          await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+            method: "POST",
+            body: JSON.stringify({
+              requests: [
+                {
+                  renameSheet: {
+                    sheetId: targetId,
+                    newTitle: TABS.ledger,
+                  },
                 },
-              },
-            ],
-          }),
-        });
+              ],
+            }),
+          });
+        }
       }
       meta = await sheetsApi<MetaIds>(
         `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
@@ -996,7 +1017,42 @@ export async function ensureWorkbook(
   }
 
   // The ledger columns were reordered so the human-readable fields come
-  // first; rewrite any rows stored in the old column order.
+  // first; rewrite any rows stored in the old column order. This must run
+  // only when the ElectricityBills tab actually exists — if the rename above
+  // could not complete (e.g. a stale sheet list), create the tab from the
+  // PowerLedger data first so the migration never hits a missing range.
+  try {
+    await sheetsApi<{ values?: string[][] }>(
+      `/spreadsheets/${spreadsheetId}/values/ElectricityBills!A1:A1`,
+    );
+  } catch {
+    // ElectricityBills is missing: either PowerLedger still holds the data
+    // (rename failed) or nothing exists yet. Salvage the data either way.
+    try {
+      const old = await sheetsApi<{ values?: string[][] }>(
+        `/spreadsheets/${spreadsheetId}/values/PowerLedger!A1:AG5000`,
+      );
+      const values = old.values ?? [];
+      if (values.length > 0) {
+        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+          method: "POST",
+          body: JSON.stringify({
+            requests: [{ addSheet: { properties: { title: TABS.ledger } } }],
+          }),
+        });
+        await sheetsApi(
+          `/spreadsheets/${spreadsheetId}/values/${TABS.ledger}!A1?valueInputOption=RAW`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ values }),
+          },
+        );
+        invalidateWorkbookCache(spreadsheetId);
+      }
+    } catch {
+      /* PowerLedger missing too — the tab is created fresh below */
+    }
+  }
   await migrateLedgerColumnOrder(spreadsheetId);
 
   const existing = new Set(
