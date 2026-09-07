@@ -363,6 +363,27 @@ const DATE_HEADERS: Partial<Record<TabKey, string[]>> = {
 const INR_FORMAT = { type: "CURRENCY", currencyCode: "INR", pattern: "₹#,##0.00" };
 const DATE_FORMAT = { type: "DATE", pattern: "yyyy-mm-dd" };
 
+/** Technical columns hidden in the sheet (still written by the app, just kept
+ *  out of sight so the tabs read like a clean report). */
+const HIDDEN_HEADERS: Partial<Record<TabKey, string[]>> = {
+  rent: ["hsn_rent", "hsn_maintenance", "generated_by", "timestamp", "notes", "round_off"],
+  ledger: [
+    "readings",
+    "generated_by",
+    "timestamp",
+    "client_id",
+    "days",
+    "meter_units",
+    "ac_units",
+    "tariff_rate",
+    "connected_load_kw",
+    "fixed_charge_rate",
+    "duty_pct",
+    "surcharge_months",
+    "txn_ref",
+  ],
+};
+
 /**
  * Applies a consistent, presentable look to every tab: brand-green frozen
  * header row, banded rows, filter view and auto-sized columns. Idempotent and
@@ -373,33 +394,8 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
     `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
   );
 
-  // Retire the legacy, always-empty ElectricityBills tab: every electricity
-  // bill is written to PowerLedger. Removed only when it holds no data rows.
-  try {
-    const legacy = (meta.sheets ?? []).find(
-      (s) => s.properties?.title === "ElectricityBills",
-    );
-    const legacySheetId = legacy?.properties?.sheetId;
-    if (legacySheetId !== undefined && legacySheetId >= 0) {
-      const check = await sheetsApi<{ values?: string[][] }>(
-        `/spreadsheets/${spreadsheetId}/values/ElectricityBills!A2:A`,
-      );
-      const hasData = (check.values ?? []).some(
-        (r) => String(r[0] ?? "").trim() !== "",
-      );
-      if (!hasData) {
-        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
-          method: "POST",
-          body: JSON.stringify({
-            requests: [{ deleteSheet: { sheetId: legacySheetId } }],
-          }),
-        });
-      }
-    }
-  } catch {
-    /* best effort — the tab may already be gone */
-  }
-
+  // Rename housekeeping is handled inside ensureWorkbook (PowerLedger ->
+  // ElectricityBills + empty leftover cleanup).
   const byTitle = new Map(
     (meta.sheets ?? []).map((s) => [
       s.properties?.title ?? "",
@@ -417,8 +413,11 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
     requests.push(
       {
         updateSheetProperties: {
-          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
-          fields: "gridProperties.frozenRowCount",
+          properties: {
+            sheetId,
+            gridProperties: { frozenRowCount: 1, frozenColumnCount: 1 },
+          },
+          fields: "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
         },
       },
       {
@@ -507,6 +506,22 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
     };
     for (const header of CURRENCY_HEADERS[tab] ?? []) colFormat(header, INR_FORMAT);
     for (const header of DATE_HEADERS[tab] ?? []) colFormat(header, DATE_FORMAT);
+    for (const header of HIDDEN_HEADERS[tab] ?? []) {
+      const idx = HEADERS[tab].indexOf(header);
+      if (idx < 0) continue;
+      requests.push({
+        updateDimensionProperties: {
+          range: {
+            sheetId,
+            dimension: "COLUMNS",
+            startIndex: idx,
+            endIndex: idx + 1,
+          },
+          properties: { hidden: true },
+          fields: "hidden",
+        },
+      });
+    }
 
     decorative.push({
       addBanding: {
@@ -703,20 +718,20 @@ async function ensureDashboard(
     push(
       "Electricity billed",
       "",
-      "=SUM(PowerLedger!S2:S5000)",
+      "=SUM(ElectricityBills!N2:N5000)",
       "",
       "Unpaid electricity bills",
-      '=COUNTIF(PowerLedger!T2:T5000,"unpaid")+COUNTIF(PowerLedger!T2:T5000,"partial")',
+      '=COUNTIF(ElectricityBills!Q2:Q5000,"unpaid")+COUNTIF(ElectricityBills!Q2:Q5000,"partial")',
     );
     push(
       "Electricity collected",
       "",
-      "=SUM(PowerLedger!AF2:AF5000)",
+      "=SUM(ElectricityBills!O2:O5000)",
       "",
       "Pending/overdue rent invoices",
       '=COUNTIF(RentInvoices!V2:V5000,"pending")+COUNTIF(RentInvoices!V2:V5000,"overdue")+COUNTIF(RentInvoices!V2:V5000,"partial")',
     );
-    push("Electricity outstanding", "", "=SUM(PowerLedger!AG2:AG5000)");
+    push("Electricity outstanding", "", "=SUM(ElectricityBills!P2:P5000)");
     push("TOTAL OUTSTANDING (₹)", "", "=C7+C10");
     push(...blank);
     push("MONTHLY REPORT — LAST 12 MONTHS");
@@ -735,8 +750,8 @@ async function ensureDashboard(
         `=TEXT(EOMONTH(TODAY(),${i - 11}),"YYYY-MM")`,
         monthSum("RentInvoices", "F", "T", monthCell),
         monthSum("RentInvoices", "F", "U", monthCell),
-        monthSum("PowerLedger", "D", "S", monthCell),
-        monthSum("PowerLedger", "D", "AF", monthCell),
+        monthSum("ElectricityBills", "C", "N", monthCell),
+        monthSum("ElectricityBills", "C", "O", monthCell),
         `=MAX(0,(B${row}-C${row})+(D${row}-E${row}))`,
       );
     }
@@ -749,7 +764,7 @@ async function ensureDashboard(
     // Same row: electricity table lives in H/I.
     rows[rows.length - 1]![
       7
-    ] = `=IFERROR(FILTER({PowerLedger!C2:C5000,PowerLedger!AG2:AG5000},PowerLedger!AG2:AG5000>0),"—")`;
+    ] = `=IFERROR(FILTER({ElectricityBills!B2:B5000,ElectricityBills!P2:P5000},ElectricityBills!P2:P5000>0),"—")`;
 
     await sheetsApi(`/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
       method: "POST",
@@ -852,12 +867,138 @@ async function ensureDashboard(
   }
 }
 
+/**
+ * One-time-per-day migration: rewrite ElectricityBills rows saved in the old
+ * column order so they line up with the new, human-readable header order.
+ * Runs inside ensureWorkbook, before headers are rewritten.
+ */
+async function migrateLedgerColumnOrder(spreadsheetId: string): Promise<void> {
+  const OLD = [
+    "bill_id",
+    "client_id",
+    "client_name",
+    "bill_date",
+    "due_date",
+    "period_from",
+    "period_to",
+    "days",
+    "meter_units",
+    "ac_units",
+    "total_units",
+    "tariff_rate",
+    "energy_charge",
+    "connected_load_kw",
+    "fixed_charge_rate",
+    "fixed_charge",
+    "arrears",
+    "surcharge",
+    "total_amount",
+    "status",
+    "payment_date",
+    "payment_mode",
+    "txn_ref",
+    "readings",
+    "generated_by",
+    "timestamp",
+    "ac_charge",
+    "duty_pct",
+    "electricity_duty",
+    "surcharge_months",
+    "remarks",
+    "amount_paid",
+    "balance",
+  ];
+  const NEW = HEADERS.ledger;
+  // Fast path: identical order, nothing to do.
+  if (OLD.length === NEW.length && OLD.every((h, i) => h === NEW[i])) return;
+  const data = await sheetsApi<{ values?: string[][] }>(
+    `/spreadsheets/${spreadsheetId}/values/${TABS.ledger}!A1:${colLetter(OLD.length - 1)}5000`,
+  );
+  const values = data.values ?? [];
+  if (values.length < 2) return;
+  const header = values[0]!.map((h) => String(h ?? "").trim());
+  // Only migrate rows whose header still matches the old order exactly.
+  if (header.length < OLD.length || OLD.some((h, i) => header[i] !== h)) return;
+  const rows = values.slice(1).filter((r) => r.some((c) => String(c ?? "").trim() !== ""));
+  const remapped = rows.map((r) => {
+    const obj: Record<string, string> = {};
+    OLD.forEach((h, i) => {
+      obj[h] = String(r[i] ?? "");
+    });
+    return NEW.map((h) => obj[h] ?? "");
+  });
+  await sheetsApi(
+    `/spreadsheets/${spreadsheetId}/values/${TABS.ledger}!A1:${colLetter(NEW.length - 1)}${rows.length + 1}?valueInputOption=RAW`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ values: [NEW, ...remapped] }),
+    },
+  );
+  invalidateWorkbookCache(spreadsheetId);
+}
+
 export async function ensureWorkbook(
   spreadsheetId: string,
-): Promise<{ created: string[] }> {
-  const meta = await sheetsApi<MetaIds>(
+): Promise<{ created: string[] }> {  let meta = await sheetsApi<MetaIds>(
     `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
   );
+
+  // The electricity ledger used to live in a tab called "PowerLedger" with a
+  // separate, always-empty "ElectricityBills" tab. Bills now live in
+  // "ElectricityBills": clear the empty leftover (if any), then rename.
+  const findSheet = (title: string) =>
+    (meta.sheets ?? []).find((s) => s.properties?.title === title);
+  try {
+    const powerLedger = findSheet("PowerLedger");
+    if (powerLedger) {
+      const legacy = findSheet("ElectricityBills");
+      if (legacy?.properties?.sheetId !== undefined) {
+        const check = await sheetsApi<{ values?: string[][] }>(
+          `/spreadsheets/${spreadsheetId}/values/ElectricityBills!A2:A`,
+        );
+        if (
+          !(check.values ?? []).some((r) => String(r[0] ?? "").trim() !== "")
+        ) {
+          await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+            method: "POST",
+            body: JSON.stringify({
+              requests: [
+                { deleteSheet: { sheetId: legacy.properties.sheetId } },
+              ],
+            }),
+          });
+        }
+      }
+      if (!findSheet("ElectricityBills")) {
+        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+          method: "POST",
+          body: JSON.stringify({
+            requests: [
+              {
+                renameSheet: {
+                  sheetId: powerLedger.properties?.sheetId,
+                  newTitle: TABS.ledger,
+                },
+              },
+            ],
+          }),
+        });
+      }
+      meta = await sheetsApi<MetaIds>(
+        `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
+      );
+    }
+  } catch {
+    /* a concurrent rename may have won — continue with a fresh meta */
+    meta = await sheetsApi<MetaIds>(
+      `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
+    );
+  }
+
+  // The ledger columns were reordered so the human-readable fields come
+  // first; rewrite any rows stored in the old column order.
+  await migrateLedgerColumnOrder(spreadsheetId);
+
   const existing = new Set(
     (meta.sheets ?? []).map((s) => s.properties?.title ?? ""),
   );
@@ -886,33 +1027,6 @@ export async function ensureWorkbook(
       })),
     }),
   });
-
-  // Retire the legacy, always-empty ElectricityBills tab: every electricity
-  // bill is written to PowerLedger. Removed only when it holds no data rows.
-  try {
-    const legacy = (meta.sheets ?? []).find(
-      (s) => s.properties?.title === "ElectricityBills",
-    );
-    const legacySheetId = legacy?.properties?.sheetId;
-    if (legacySheetId !== undefined && legacySheetId >= 0) {
-      const check = await sheetsApi<{ values?: string[][] }>(
-        `/spreadsheets/${spreadsheetId}/values/ElectricityBills!A2:A`,
-      );
-      const hasData = (check.values ?? []).some(
-        (r) => String(r[0] ?? "").trim() !== "",
-      );
-      if (!hasData) {
-        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
-          method: "POST",
-          body: JSON.stringify({
-            requests: [{ deleteSheet: { sheetId: legacySheetId } }],
-          }),
-        });
-      }
-    }
-  } catch {
-    /* best effort — the tab may already be gone */
-  }
 
   // Seed the labs and default settings when those tabs are empty.
   const wb = await readWorkbook(spreadsheetId, { ensure: false });

@@ -60,6 +60,25 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-07 — Renamed PowerLedger → ElectricityBills + simplified sheet
+- TABS.ledger renamed: "PowerLedger" → "ElectricityBills" (user expectation).
+  ensureWorkbook: deletes the empty old ElectricityBills leftover tab, then
+  renames PowerLedger. Ledger header order changed to put human-readable
+  columns first (bill_id, client_name, dates, units, charges, amounts,
+  status, remarks); technical columns moved to the end.
+- migrateLedgerColumnOrder(): rewrites existing rows stored in the old
+  column order (detected by exact old-header match) so data aligns with the
+  new headers. Runs inside ensureWorkbook before header rewrite.
+- HIDDEN_HEADERS: technical columns (readings, ids, rates, timestamp…) are
+  hidden in the sheet via updateDimensionProperties(hidden) — data intact.
+- Frozen first row + first column on every tab.
+- Dashboard formulas remapped to the new ElectricityBills column letters:
+  total N, paid O, balance P, status Q, month C, client B.
+- "Format workbook" button now runs full ensureWorkbook (rename + migrate +
+  format + dashboard), not just formatting.
+- Gotcha: the rename changes the tab name users see; older audit mentions of
+  PowerLedger refer to the same tab.
+
 ### 2026-09-07 — Auto workbook upgrade (no manual button needed)
 - `upgradeWorkbookOnce()` in gbp.server.ts: once per day per server instance,
   the first workbook load fires `ensureWorkbook` in the background — applies

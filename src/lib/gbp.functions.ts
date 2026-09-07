@@ -71,10 +71,11 @@ export const formatWorkbookFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     const { requireRole, requireSpreadsheetId } = await import("./gbp.server");
-    const { formatWorkbook } = await import("./sheets.server");
     await requireRole(context.supabase, context.userId, ["admin"]);
     const spreadsheetId = await requireSpreadsheetId();
-    await formatWorkbook(spreadsheetId);
+    // ensureWorkbook = rename/migrate + tab structure + formatting + dashboard
+    const { ensureWorkbook } = await import("./sheets.server");
+    await ensureWorkbook(spreadsheetId);
     return { formatted: true };
   });
 
