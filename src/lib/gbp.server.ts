@@ -459,9 +459,12 @@ export async function saveRentInvoice(input: RentInvoiceInput, canEdit: boolean)
 
   const bill = computeRentBill({
     gross: input.gross_amount && input.gross_amount > 0 ? input.gross_amount : fallbackGross,
-    discountPct: input.discount_pct ?? inc["discount_pct"],
-    discountAmount: input.discount_amount ?? inc["discount_amount"],
-    maintenancePct: input.maintenance_pct ?? settingNum(settings, "maintenance_pct"),
+    // Empty strings mean "use what's on record" — the form preview falls back
+    // to the tenant's stored discount, so the saved invoice must do the same
+    // or staff would see a different total on the PDF than on the preview.
+    discountPct: input.discount_pct || inc["discount_pct"],
+    discountAmount: input.discount_amount || inc["discount_amount"],
+    maintenancePct: input.maintenance_pct || settingNum(settings, "maintenance_pct"),
     maintenanceAmount: input.maintenance_amount,
     maintenanceRatePerSqft: settingNum(settings, "maintenance_rate_per_sqft"),
     areaSqft: billedArea,

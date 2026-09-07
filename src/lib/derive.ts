@@ -118,13 +118,16 @@ export function dueRows(wb: Workbook): DueRow[] {
     };
   });
 
-  // Electricity dues come from the billing-engine ledger (PowerLedger).
+  // Electricity dues come from the billing-engine ledger (ElectricityBills).
   const power: DueRow[] = wb.ledger
     .filter((r) => (r["bill_id"] ?? "").trim() !== "")
     .map((r) => {
       const amount = num(r["total_amount"]);
       const isPaid = (r["status"] ?? "").toLowerCase() === "paid";
-      const paid = isPaid ? amount : 0;
+      // Trust the recorded part-payments; fall back to the status only for
+      // older rows that never had amount_paid filled in.
+      const storedPaid = num(r["amount_paid"]);
+      const paid = storedPaid > 0 ? Math.min(storedPaid, amount) : isPaid ? amount : 0;
       const client = wb.clients.find((c) => c["client_id"] === r["client_id"]);
       const incubateeId = client?.["incubatee_id"] ?? "";
       return {
@@ -139,7 +142,7 @@ export function dueRows(wb: Workbook): DueRow[] {
         amount,
         paid,
         balance: Math.max(0, amount - paid),
-        status: isPaid ? "paid" : dueStatus(amount, 0, r["due_date"]),
+        status: paid >= amount && amount > 0 ? "paid" : dueStatus(amount, paid, r["due_date"]),
         dueDate: r["due_date"] ?? "",
         phone: client?.["whatsapp"] || phoneOf(incubateeId),
       };
