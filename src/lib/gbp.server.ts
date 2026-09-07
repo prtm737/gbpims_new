@@ -144,9 +144,11 @@ export async function connectSpreadsheet(rawInput: string, userId: string) {
   return { spreadsheetId, title, created };
 }
 
-export async function loadWorkbook(): Promise<Workbook> {
+export async function loadWorkbook(
+  options: { fresh?: boolean } = {},
+): Promise<Workbook> {
   const id = await requireSpreadsheetId();
-  const wb = await readWorkbook(id);
+  const wb = await readWorkbook(id, { fresh: options.fresh === true });
   const { LAB_IDS } = await import("./sheets-schema");
   const have = new Set(wb.labs.map((l) => l["lab_id"]));
   if (LAB_IDS.some((labId) => !have.has(labId))) {

@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { ConfirmDeleteDialog, type DeleteTarget } from "@/components/confirm-delete-dialog";
+import { PdfArchiveSection } from "@/components/pdf-archive-section";
 import { PdfPreviewDialog } from "@/components/pdf-preview-dialog";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
@@ -905,6 +906,9 @@ function BillingPage() {
           </section>
 
 
+
+          {/* Month-wise PDF archive */}
+          <PdfArchiveSection />
 
           {/* Clients */}
           <section className="surface-card overflow-hidden">

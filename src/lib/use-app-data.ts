@@ -1,10 +1,15 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 
-import { getMe, getWorkbook } from "./gbp.functions";
+import { getFreshWorkbook, getMe, getWorkbook } from "./gbp.functions";
 
-type WorkbookResult = Awaited<ReturnType<typeof getWorkbook>>;
+type WorkbookResult = Awaited<ReturnType<typeof getFreshWorkbook>>;
 
 // The workbook is a read-mostly snapshot, so we keep the last successful copy in
 // the browser. Pages then paint instantly on reload/navigation while a fresh
@@ -58,6 +63,23 @@ export function useWorkbook() {
   });
 }
 
+/**
+ * Pull a guaranteed-fresh copy of the workbook straight from the Google Sheet
+ * (bypassing every server cache) and push it into the query cache. Used after
+ * every write and by the manual sync button so the app can never show a row
+ * that is not actually stored in the sheet.
+ */
+export async function fetchFreshWorkbook(
+  queryClient: QueryClient,
+): Promise<WorkbookResult> {
+  const fresh = (await getFreshWorkbook()) as WorkbookResult;
+  if (fresh?.connected) {
+    writeLocalWorkbook(fresh);
+    queryClient.setQueryData(["workbook"], fresh);
+  }
+  return fresh;
+}
+
 /** Mutation helper that refreshes the workbook and toasts the outcome. */
 export function useSheetMutation<TInput, TOutput>(
   fn: (input: TInput) => Promise<TOutput>,
@@ -67,9 +89,19 @@ export function useSheetMutation<TInput, TOutput>(
   return useMutation({
     mutationFn: fn,
     onSuccess: (out) => {
-      queryClient.invalidateQueries({ queryKey: ["workbook"] });
+      toast.success(
+        typeof successMessage === "function" ? successMessage(out) : successMessage,
+      );
       queryClient.invalidateQueries({ queryKey: ["me"] });
-      toast.success(typeof successMessage === "function" ? successMessage(out) : successMessage);
+      // Re-read the sheet immediately: what the user sees must equal what the
+      // sheet contains. Fall back to a plain refetch if the fresh read fails.
+      fetchFreshWorkbook(queryClient)
+        .then((fresh) => {
+          if (!fresh?.connected) queryClient.invalidateQueries({ queryKey: ["workbook"] });
+        })
+        .catch(() =>
+          queryClient.invalidateQueries({ queryKey: ["workbook"] }),
+        );
     },
     onError: (error: Error) => {
       toast.error(error.message || "Something went wrong");

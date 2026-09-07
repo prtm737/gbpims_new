@@ -24,6 +24,7 @@ import { EditRemarkDialog } from "@/components/edit-remark-dialog";
 import { ManualPowerEntryDialog } from "@/components/manual-power-entry-dialog";
 import { ManualRentEntryDialog } from "@/components/manual-rent-entry-dialog";
 import { MarkRentPaidDialog } from "@/components/mark-rent-paid-dialog";
+import { PdfArchiveSection } from "@/components/pdf-archive-section";
 import { PdfPreviewDialog } from "@/components/pdf-preview-dialog";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
@@ -755,6 +756,9 @@ function LedgerPage() {
               </p>
             )}
           </div>
+
+          {/* Month-wise archive of every downloaded bill / invoice / receipt. */}
+          <PdfArchiveSection />
         </div>
       )}
 

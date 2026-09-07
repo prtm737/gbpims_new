@@ -290,6 +290,24 @@ async function build(inv: RentInvoicePdf) {
 export async function downloadRentInvoicePdf(inv: RentInvoicePdf): Promise<void> {
   const pdf = await build(inv);
   pdf.save(rentInvoiceFileName(inv));
+  // Every downloaded invoice is also stored in the month-wise archive.
+  void (async () => {
+    try {
+      const { archiveMonth, archivePdfQuiet } = await import("./pdf-archive-client");
+      const month = archiveMonth(inv.month, inv.invoiceDate.slice(0, 7));
+      if (!month) return;
+      const pdf_base64 = await rentInvoicePdfBase64(inv);
+      await archivePdfQuiet({
+        kind: "rent",
+        month,
+        ref_id: inv.invoiceNo,
+        label: inv.party,
+        pdf_base64,
+      });
+    } catch {
+      /* the download itself already succeeded */
+    }
+  })();
 }
 
 export async function openRentInvoicePdf(inv: RentInvoicePdf): Promise<void> {
@@ -303,4 +321,11 @@ export async function openRentInvoicePdf(inv: RentInvoicePdf): Promise<void> {
 export async function rentInvoicePdfUrl(inv: RentInvoicePdf): Promise<string> {
   const pdf = await build(inv);
   return URL.createObjectURL(pdf.output("blob"));
+}
+
+/** Base64 payload for the server-side month-wise archive. */
+export async function rentInvoicePdfBase64(inv: RentInvoicePdf): Promise<string> {
+  const pdf = await build(inv);
+  const dataUri = pdf.output("datauristring");
+  return dataUri.slice(dataUri.indexOf(",") + 1);
 }

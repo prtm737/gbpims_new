@@ -60,6 +60,49 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-07 — Month-wise PDF archive in Supabase Storage
+- New private bucket `gbpims-pdfs`, bootstrapped lazily via the Storage API on
+  first upload (no migration needed; supabaseAdmin service role).
+- Layout: `<kind>/<YYYY-MM>/<refId>_<label>.pdf`, kind = electricity | rent |
+  receipt. Upsert on the same path replaces (regenerated bill = new PDF).
+- Server: `src/lib/pdf-archive.server.ts` (archivePdf, listPdfArchive,
+  getPdfDownloadUrl → 1h signed URL) + `archivePdfFn`/`listPdfArchiveFn`/
+  `getPdfDownloadUrlFn` in gbp.functions.ts (archive requires write role).
+- Client: every PDF download auto-archives (pdf.ts `downloadPdf`/
+  `downloadPowerBillPdf`, pdf-rent.ts `downloadRentInvoicePdf`); new base64
+  builders (`powerBillPdfBase64`, `rentInvoicePdfBase64`, `pdfBase64`).
+- UI: `PdfArchiveSection` (Billing + Ledger pages) lists stored PDFs grouped
+  by month with signed-URL downloads; refreshes via `pdf-archive-updated`
+  window event fired by `archivePdfQuiet` in pdf-archive-client.ts.
+- Old bills: user believed data was lost — it was in `PowerLedger` (they were
+  checking the dead `ElectricityBills` tab); old bills can be re-stored by
+  simply downloading them (auto-archive kicks in).
+
+### 2026-09-07 — Fixed "data not appearing in the Google Sheet"
+- Symptoms: UI saved fine (data appeared in-app) but rows were missing/old in
+  the sheet; Ledger and generated electricity bills not visible; sync chip said
+  "Sheet synced" while showing stale data.
+- Root causes fixed:
+  1. Cache-poisoning race in `sheets.server.ts`: a read in flight during a
+     write finished AFTER the write and re-cached the pre-write workbook (and
+     re-saved it to the Supabase snapshot). Fixed with a per-spreadsheet
+     write-generation counter — reads that raced a write are never cached.
+  2. After-write UI refresh used `invalidateQueries`, which could be served
+     from the 2-min server cache / snapshot instead of the sheet. Added
+     `getFreshWorkbook` server fn (bypasses memory cache + snapshot via
+     `readWorkbook(fresh)`) and `fetchFreshWorkbook()` in `use-app-data.ts`;
+     every `useSheetMutation` success now pulls the live sheet.
+  3. Manual sync button (`SyncStatus`, ledger page) and `useWorkbookState`'s
+     `refetch()` now use the same fresh read.
+  4. Removed the legacy empty `ElectricityBills` tab from `TABS`/`HEADERS`/
+     `Workbook` (all electricity data lives in `PowerLedger`); the dead tab
+     confused "where is my data" — `ensureWorkbook` + `formatWorkbook` now
+     delete it (only if it has no data rows).
+- Gotcha: sheet stays source of truth; snapshot/cache are read accelerators
+  only. If users report stale data again, check `writeGeneration` logic first.
+- Typecheck/build verified locally with npm deps in tmp dir (repo uses bun
+  lockfile; termux storage blocked `npm install` in-tree).
+
 ### 2026-09-05 — Speed + installable PWA
 - `router.tsx`: `defaultPreload: "intent"` + `defaultPreloadStaleTime: 30s` —
   route chunks/loaders prefetch on hover/touch.

@@ -1,9 +1,10 @@
 import { Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useWorkbook } from "@/lib/use-app-data";
+import { fetchFreshWorkbook, useWorkbook } from "@/lib/use-app-data";
 import type { Workbook } from "@/lib/sheets-schema";
 
 export function useWorkbookState(): {
@@ -11,12 +12,23 @@ export function useWorkbookState(): {
   role: string;
   url?: string;
   fallback: ReactNode | null;
-  refetch: () => void;
+  refetch: () => Promise<void>;
   syncing: boolean;
   updatedAt: number;
   syncError: string | null;
 } {
   const query = useWorkbook();
+  const queryClient = useQueryClient();
+  // Manual refreshes re-read the live Google Sheet rather than the server
+  // cache, so "Sheet synced" always means the data really came from the sheet.
+  const refetch = async () => {
+    try {
+      const fresh = await fetchFreshWorkbook(queryClient);
+      if (!fresh?.connected) await query.refetch();
+    } catch {
+      await query.refetch();
+    }
+  };
   const sync = {
     syncing: query.isFetching,
     updatedAt: query.dataUpdatedAt,
@@ -35,7 +47,7 @@ export function useWorkbookState(): {
           <Skeleton className="h-64 w-full" />
         </div>
       ),
-      refetch: query.refetch,
+      refetch,
     };
   }
 
@@ -56,7 +68,7 @@ export function useWorkbookState(): {
           </Button>
         </div>
       ),
-      refetch: query.refetch,
+      refetch,
     };
   }
 
@@ -77,7 +89,7 @@ export function useWorkbookState(): {
           </Button>
         </div>
       ),
-      refetch: query.refetch,
+      refetch,
     };
   }
 
@@ -87,7 +99,7 @@ export function useWorkbookState(): {
     url: query.data.url,
     ...sync,
     fallback: null,
-    refetch: query.refetch,
+    refetch,
   };
 }
 

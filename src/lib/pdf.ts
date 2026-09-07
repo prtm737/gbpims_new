@@ -1,5 +1,6 @@
 // Client-side PDF generation for rent/electricity bills and payment receipts.
 import { BRAND, getLogoDataUrl, getUpiQrDataUrl } from "./brand";
+import { archiveMonth, archivePdfQuiet } from "./pdf-archive-client";
 import type { PowerBill } from "./power";
 import { inr, monthLabel } from "./sheets-schema";
 
@@ -153,6 +154,30 @@ async function build(doc: PdfDoc) {
 export async function downloadPdf(doc: PdfDoc): Promise<void> {
   const pdf = await build(doc);
   pdf.save(pdfFileName(doc));
+  // Every downloaded receipt/bill is also stored in the month-wise archive.
+  void (async () => {
+    try {
+      const month = archiveMonth(doc.month, new Date().toISOString().slice(0, 7));
+      if (!month || !doc.docId) return;
+      const pdf_base64 = await pdfBase64(doc);
+      await archivePdfQuiet({
+        kind: "receipt",
+        month,
+        ref_id: doc.docId,
+        label: doc.company,
+        pdf_base64,
+      });
+    } catch {
+      /* the download itself already succeeded */
+    }
+  })();
+}
+
+/** Base64 payload for the server-side month-wise archive. */
+export async function pdfBase64(doc: PdfDoc): Promise<string> {
+  const pdf = await build(doc);
+  const dataUri = pdf.output("datauristring");
+  return dataUri.slice(dataUri.indexOf(",") + 1);
 }
 
 /** Opens the PDF in a new tab (print/share friendly) and returns the object URL. */
@@ -693,6 +718,23 @@ export function powerBillFileName(bill: PowerBill): string {
 export async function downloadPowerBillPdf(bill: PowerBill, o: PowerBillPdfOptions) {
   const pdf = await buildPowerBill(bill, o);
   pdf.save(powerBillFileName(bill));
+  // Every downloaded bill is also stored in the month-wise archive.
+  void (async () => {
+    try {
+      const month = archiveMonth(bill.monthKey, bill.billDate.slice(0, 7));
+      if (!month) return;
+      const pdf_base64 = await powerBillPdfBase64(bill, o);
+      await archivePdfQuiet({
+        kind: "electricity",
+        month,
+        ref_id: bill.billId,
+        label: bill.clientName,
+        pdf_base64,
+      });
+    } catch {
+      /* the download itself already succeeded */
+    }
+  })();
 }
 
 export async function openPowerBillPdf(bill: PowerBill, o: PowerBillPdfOptions) {
@@ -706,4 +748,14 @@ export async function openPowerBillPdf(bill: PowerBill, o: PowerBillPdfOptions) 
 export async function powerBillPdfUrl(bill: PowerBill, o: PowerBillPdfOptions): Promise<string> {
   const pdf = await buildPowerBill(bill, o);
   return URL.createObjectURL(pdf.output("blob"));
+}
+
+/** Base64 payload for the server-side month-wise archive. */
+export async function powerBillPdfBase64(
+  bill: PowerBill,
+  o: PowerBillPdfOptions,
+): Promise<string> {
+  const pdf = await buildPowerBill(bill, o);
+  const dataUri = pdf.output("datauristring");
+  return dataUri.slice(dataUri.indexOf(",") + 1);
 }

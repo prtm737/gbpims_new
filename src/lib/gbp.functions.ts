@@ -32,6 +32,24 @@ export const getWorkbook = createServerFn({ method: "GET" })
     return { connected: true as const, role, url: status.url, data };
   });
 
+/**
+ * Same as getWorkbook but always re-reads the live Google Sheet, bypassing the
+ * server caches and the database snapshot. Used right after every write so the
+ * UI can never show a row that is not actually in the sheet.
+ */
+export const getFreshWorkbook = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { getMyRole, loadWorkbook, workbookStatus } = await import("./gbp.server");
+    const [role, status] = await Promise.all([
+      getMyRole(context.supabase, context.userId),
+      workbookStatus(),
+    ]);
+    if (!status.connected) return { connected: false as const, role, data: null };
+    const data = await loadWorkbook({ fresh: true });
+    return { connected: true as const, role, url: status.url, data };
+  });
+
 export const connectSheet = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((data: { link: string }) =>
@@ -554,4 +572,43 @@ export const setUserRoleFn = createServerFn({ method: "POST" })
     const { requireRole, setUserRole } = await import("./gbp.server");
     await requireRole(context.supabase, context.userId, ["admin"]);
     return setUserRole(data.userId, data.role, context.userId);
+  });
+
+/* ----------------------------- PDF archive ------------------------------- */
+
+export const archivePdfFn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((data: unknown) =>
+    z
+      .object({
+        kind: z.enum(["electricity", "rent", "receipt"]),
+        month: z.string().regex(/^\d{4}-\d{2}$/),
+        ref_id: z.string().trim().min(1).max(80),
+        label: z.string().trim().max(60).optional(),
+        pdf_base64: z.string().min(50).max(6_000_000),
+      })
+      .parse(data),
+  )
+  .handler(async ({ data, context }) => {
+    const { requireWrite } = await import("./gbp.server");
+    await requireWrite(context.supabase, context.userId);
+    const { archivePdf } = await import("./pdf-archive.server");
+    return archivePdf(data);
+  });
+
+export const listPdfArchiveFn = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const { listPdfArchive } = await import("./pdf-archive.server");
+    return { files: await listPdfArchive() };
+  });
+
+export const getPdfDownloadUrlFn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((data: unknown) =>
+    z.object({ path: z.string().trim().min(5).max(300) }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    const { getPdfDownloadUrl } = await import("./pdf-archive.server");
+    return getPdfDownloadUrl(data.path);
   });

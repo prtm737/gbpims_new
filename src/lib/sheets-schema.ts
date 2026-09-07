@@ -4,7 +4,6 @@ export const TABS = {
   labs: "Labs",
   incubatees: "Incubatees",
   rent: "RentInvoices",
-  electricity: "ElectricityBills",
   payments: "Payments",
   clients: "PowerClients",
   ledger: "PowerLedger",
@@ -81,20 +80,6 @@ export const HEADERS: Record<TabKey, string[]> = {
     "txn_ref",
     "notes",
     "balance",
-  ],
-  electricity: [
-    "bill_id",
-    "lab_id",
-    "incubatee_id",
-    "month",
-    "prev_reading",
-    "curr_reading",
-    "units",
-    "rate",
-    "fixed_charge",
-    "amount",
-    "amount_paid",
-    "status",
   ],
   payments: [
     "payment_id",
@@ -297,7 +282,6 @@ export type Workbook = {
   labs: Row[];
   incubatees: Row[];
   rent: Row[];
-  electricity: Row[];
   payments: Row[];
   clients: Row[];
   ledger: Row[];

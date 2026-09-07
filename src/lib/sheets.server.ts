@@ -175,6 +175,15 @@ async function sheetsApi<T>(path: string, init?: RequestInit): Promise<T> {
 
 type CacheEntry = { at: number; data: Workbook };
 const workbookCache = new Map<string, CacheEntry>();
+// Bumped on every write so an in-flight read that started before the write can
+// never repopulate the cache with a pre-write copy of the workbook.
+const writeGeneration = new Map<string, number>();
+function bumpWriteGeneration(spreadsheetId: string): void {
+  writeGeneration.set(
+    spreadsheetId,
+    (writeGeneration.get(spreadsheetId) ?? 0) + 1,
+  );
+}
 // Fresh window served straight from memory, plus a longer stale window that is
 // served instantly while a background refresh runs (keeps Sheets quota low).
 const WORKBOOK_TTL_MS = 120_000;
@@ -259,6 +268,7 @@ async function dropSnapshot(spreadsheetId: string): Promise<void> {
 export function invalidateWorkbookCache(spreadsheetId?: string): void {
   if (spreadsheetId) {
     workbookCache.delete(spreadsheetId);
+    bumpWriteGeneration(spreadsheetId);
     void dropSnapshot(spreadsheetId);
   } else {
     workbookCache.clear();
@@ -300,8 +310,6 @@ function objectToRow(tab: TabKey, obj: Row): string[] {
   return HEADERS[tab].map((h) => String(obj[h] ?? ""));
 }
 
-type Meta = { sheets?: { properties?: { title?: string } }[] };
-
 type MetaIds = {
   sheets?: { properties?: { title?: string; sheetId?: number } }[];
 };
@@ -322,6 +330,34 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
   const meta = await sheetsApi<MetaIds>(
     `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
   );
+
+  // Retire the legacy, always-empty ElectricityBills tab: every electricity
+  // bill is written to PowerLedger. Removed only when it holds no data rows.
+  try {
+    const legacy = (meta.sheets ?? []).find(
+      (s) => s.properties?.title === "ElectricityBills",
+    );
+    const legacySheetId = legacy?.properties?.sheetId;
+    if (legacySheetId !== undefined && legacySheetId >= 0) {
+      const check = await sheetsApi<{ values?: string[][] }>(
+        `/spreadsheets/${spreadsheetId}/values/ElectricityBills!A2:A`,
+      );
+      const hasData = (check.values ?? []).some(
+        (r) => String(r[0] ?? "").trim() !== "",
+      );
+      if (!hasData) {
+        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+          method: "POST",
+          body: JSON.stringify({
+            requests: [{ deleteSheet: { sheetId: legacySheetId } }],
+          }),
+        });
+      }
+    }
+  } catch {
+    /* best effort — the tab may already be gone */
+  }
+
   const byTitle = new Map(
     (meta.sheets ?? []).map((s) => [
       s.properties?.title ?? "",
@@ -428,7 +464,6 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
       tab === "labs" ||
       tab === "incubatees" ||
       tab === "rent" ||
-      tab === "electricity" ||
       tab === "ledger"
     ) {
       const statusHeader =
@@ -522,8 +557,8 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
 export async function ensureWorkbook(
   spreadsheetId: string,
 ): Promise<{ created: string[] }> {
-  const meta = await sheetsApi<Meta>(
-    `/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+  const meta = await sheetsApi<MetaIds>(
+    `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
   );
   const existing = new Set(
     (meta.sheets ?? []).map((s) => s.properties?.title ?? ""),
@@ -553,6 +588,33 @@ export async function ensureWorkbook(
       })),
     }),
   });
+
+  // Retire the legacy, always-empty ElectricityBills tab: every electricity
+  // bill is written to PowerLedger. Removed only when it holds no data rows.
+  try {
+    const legacy = (meta.sheets ?? []).find(
+      (s) => s.properties?.title === "ElectricityBills",
+    );
+    const legacySheetId = legacy?.properties?.sheetId;
+    if (legacySheetId !== undefined && legacySheetId >= 0) {
+      const check = await sheetsApi<{ values?: string[][] }>(
+        `/spreadsheets/${spreadsheetId}/values/ElectricityBills!A2:A`,
+      );
+      const hasData = (check.values ?? []).some(
+        (r) => String(r[0] ?? "").trim() !== "",
+      );
+      if (!hasData) {
+        await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+          method: "POST",
+          body: JSON.stringify({
+            requests: [{ deleteSheet: { sheetId: legacySheetId } }],
+          }),
+        });
+      }
+    }
+  } catch {
+    /* best effort — the tab may already be gone */
+  }
 
   // Seed the labs and default settings when those tabs are empty.
   const wb = await readWorkbook(spreadsheetId, { ensure: false });
@@ -627,6 +689,7 @@ async function fetchWorkbook(
   spreadsheetId: string,
   options: { ensure?: boolean } = {},
 ): Promise<Workbook> {
+  const genAtStart = writeGeneration.get(spreadsheetId) ?? 0;
   const tabKeys = Object.keys(TABS) as TabKey[];
   const query = tabKeys.map((t) => `ranges=${rangeFor(t)}`).join("&");
 
@@ -681,15 +744,18 @@ async function fetchWorkbook(
     labs: byTab.labs,
     incubatees: byTab.incubatees,
     rent: byTab.rent,
-    electricity: byTab.electricity,
     payments: byTab.payments,
     clients: byTab.clients,
     ledger: byTab.ledger,
     audit: byTab.audit ?? [],
     settings,
   };
-  workbookCache.set(spreadsheetId, { at: Date.now(), data: workbook });
-  void saveSnapshot(spreadsheetId, workbook);
+  // Only cache when no write raced this read: a pre-write copy must never
+  // overwrite the cache or the durable snapshot.
+  if ((writeGeneration.get(spreadsheetId) ?? 0) === genAtStart) {
+    workbookCache.set(spreadsheetId, { at: Date.now(), data: workbook });
+    void saveSnapshot(spreadsheetId, workbook);
+  }
   return workbook;
 }
 
