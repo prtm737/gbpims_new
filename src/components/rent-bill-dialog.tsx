@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { saveRentInvoiceFn } from "@/lib/gbp.functions";
+import { archiveMonth, archivePdfQuiet } from "@/lib/pdf-archive-client";
+import { rentInvoicePdfBase64 } from "@/lib/pdf-rent";
 import type { RentDraftFields } from "@/lib/rent-invoices";
 import {
   computeRentBill,
@@ -153,7 +155,75 @@ export function RentBillDialog({
                   remarks: remarks,
                 },
               },
-              { onSuccess: onClose },
+              { onSuccess: (out) => {
+                  onClose();
+                  // Store the invoice PDF in the month-wise archive the moment
+                  // the bill is generated.
+                  void (async () => {
+                    try {
+                      const archiveKey = archiveMonth(month);
+                      if (!archiveKey || !tenant) return;
+                      const invoice = computeRentBill({
+                        gross: effectiveGross,
+                        discountPct: discountPct || tenant["discount_pct"],
+                        discountAmount: discountAmount || tenant["discount_amount"],
+                        maintenancePct,
+                        maintenanceAmount,
+                        maintenanceRatePerSqft: setting("maintenance_rate_per_sqft"),
+                        areaSqft: billedArea,
+                        gstApplicable: gst,
+                        cgstPct: num(cgstPct),
+                        sgstPct: num(sgstPct),
+                      });
+                      const pdf_base64 = await rentInvoicePdfBase64({
+                        invoiceNo: out.invoiceNo,
+                        invoiceDate: invoiceDate || `${archiveKey}-28`,
+                        month: archiveKey,
+                        parkName: setting("park_name"),
+                        unitName: setting("park_unit_name"),
+                        parkAddressLines: setting("park_address")
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                        parkGstin: setting("park_gstin"),
+                        stateName: setting("state_name"),
+                        stateCode: setting("state_code"),
+                        panNo: setting("pan_no"),
+                        vatTin: setting("vat_tin"),
+                        party: tenant["company_name"] ?? "",
+                        partyAddressLines: (tenant["address"] ?? "")
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                        partyGstin: gstin,
+                        labId: tenant["lab_id"] ?? "",
+                        dueDate,
+                        rentAmount: invoice.rent,
+                        maintenanceAmount: invoice.maintenance,
+                        hsnRent: setting("hsn_rent"),
+                        hsnMaintenance: setting("hsn_maintenance"),
+                        cgstPct: num(cgstPct),
+                        sgstPct: num(sgstPct),
+                        cgst: invoice.cgst,
+                        sgst: invoice.sgst,
+                        roundOff: invoice.roundOff,
+                        total: invoice.total,
+                        paid: 0,
+                        remarks: remarks,
+                        status: "pending",
+                      });
+                      await archivePdfQuiet({
+                        kind: "rent",
+                        month: archiveKey,
+                        ref_id: out.invoiceNo || out.invoiceId,
+                        label: tenant["company_name"] ?? "",
+                        pdf_base64,
+                      });
+                    } catch {
+                      /* the invoice itself is already saved */
+                    }
+                  })();
+                } },
             );
           }}
         >

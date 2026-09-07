@@ -897,20 +897,44 @@ export async function importTenantClients() {
       (t["company_name"] ?? "").trim() !== "",
   );
 
-  let created = 0;
+  // One billing client per company: a tenant occupying several labs (recorded
+  // as multiple tenant rows) still gets a single client whose meters cover
+  // every lab the company occupies.
+  const groups = new Map<string, typeof tenants>();
   for (const t of tenants) {
-    const incubateeId = (t["incubatee_id"] ?? "").trim();
-    const name = (t["company_name"] ?? "").trim();
-    if (existing.has(incubateeId) || existingNames.has(name.toLowerCase())) continue;
-    const labId = (t["lab_id"] ?? "").trim();
+    const key = (t["company_name"] ?? "").trim().toLowerCase();
+    const group = groups.get(key) ?? [];
+    group.push(t);
+    groups.set(key, group);
+  }
+
+  let created = 0;
+  for (const [key, group] of groups) {
+    if (existingNames.has(key)) continue;
+    const primary = group[0]!;
+    const incubateeId = group
+      .map((t) => (t["incubatee_id"] ?? "").trim())
+      .find((v) => v !== "");
+    if (incubateeId && existing.has(incubateeId)) continue;
+    const labs = [
+      ...new Set(group.flatMap((t) => spaceIds(t["lab_id"])).filter((v) => v !== "")),
+    ];
+    const firstLab = (primary["lab_id"] ?? "").trim();
+    const meters = labs.length
+      ? labs.map((labId, i) => ({ id: `M-${i + 1}`, labName: labId, meterNo: "" }))
+      : [{ id: "M-1", labName: firstLab || (primary["company_name"] ?? ""), meterNo: "" }];
     await savePowerClient({
-      client_name: name,
-      address: labId ? `${labId}, Guwahati Biotech Park` : "",
-      whatsapp: t["phone"] ?? "",
-      incubatee_id: incubateeId,
-      meters: [{ id: `M-${created + 1}`, labName: labId || name, meterNo: "" }],
+      client_name: (primary["company_name"] ?? "").trim(),
+      address: labs.length
+        ? `${labs.join(", ")}, Guwahati Biotech Park`
+        : firstLab
+          ? `${firstLab}, Guwahati Biotech Park`
+          : "",
+      whatsapp: primary["phone"] ?? "",
+      incubatee_id: incubateeId ?? "",
+      meters,
     });
-    existingNames.add(name.toLowerCase());
+    existingNames.add(key);
     created += 1;
   }
   return { created, skipped: tenants.length - created };
@@ -991,10 +1015,8 @@ export async function savePowerBill(input: PowerBillInput) {
   });
 
   const requested = (input.bill_id ?? "").trim();
-  const existing = requested ? wb.ledger.find((b) => b["bill_id"] === requested) : undefined;
-  // A staff-supplied invoice number is honoured (edits reuse the same row);
-  // otherwise the next number in the yearly series is allocated.
-  const billId =
+  let existing = requested ? wb.ledger.find((b) => b["bill_id"] === requested) : undefined;
+  let billId =
     existing?.["bill_id"] ??
     (requested !== ""
       ? requested
@@ -1002,6 +1024,26 @@ export async function savePowerBill(input: PowerBillInput) {
           wb.ledger.map((b) => b["bill_id"] ?? ""),
           new Date(input.bill_date || Date.now()).getFullYear(),
         ));
+
+  if (!existing) {
+    // Re-check against a fresh read before appending: a stale cache can
+    // allocate a bill number that already exists, and appending it would
+    // overwrite another client's bill row (reports of "bills missing from
+    // the sheet" traced back to exactly this).
+    const freshWb = await readWorkbook(id, { fresh: true });
+    const clash = freshWb.ledger.find((b) => (b["bill_id"] ?? "") === billId);
+    if (clash) {
+      if (requested !== "") {
+        existing = clash;
+        billId = clash["bill_id"] ?? billId;
+      } else {
+        billId = nextBillNumber(
+          freshWb.ledger.map((b) => b["bill_id"] ?? ""),
+          new Date(input.bill_date || Date.now()).getFullYear(),
+        );
+      }
+    }
+  }
 
 
   const row: Row = {

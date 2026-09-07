@@ -55,7 +55,8 @@ import {
   num,
   parkProfile,
 } from "@/lib/sheets-schema";
-import { downloadPowerBillPdf, powerBillPdfUrl } from "@/lib/pdf";
+import { downloadPowerBillPdf, powerBillPdfUrl, powerBillPdfBase64 } from "@/lib/pdf";
+import { archiveMonth, archivePdfQuiet } from "@/lib/pdf-archive-client";
 import { useSheetMutation } from "@/lib/use-app-data";
 
 export const Route = createFileRoute("/_authenticated/billing")({
@@ -774,17 +775,42 @@ function BillingPage() {
                             },
                             {
                               onSuccess: (out) => {
-                                setGeneratedBill({
+                                const finalBill: PowerBill = {
                                   ...billSnapshot,
                                   billId: out.billId,
                                   total: out.total,
                                   balance: out.total,
-                                });
+                                };
+                                setGeneratedBill(finalBill);
                                 setPresent({});
                                 setPrevOverride({});
                                 setArrearsInput("");
                                   setEditingBillId("");
                                   setInvoiceNo("");
+                                // Store the PDF in the month-wise archive the
+                                // moment the bill is generated.
+                                void (async () => {
+                                  try {
+                                    const month = archiveMonth(
+                                      finalBill.monthKey,
+                                      finalBill.billDate.slice(0, 7),
+                                    );
+                                    if (!month) return;
+                                    const pdf_base64 = await powerBillPdfBase64(
+                                      finalBill,
+                                      powerPdfOptions(finalBill),
+                                    );
+                                    await archivePdfQuiet({
+                                      kind: "electricity",
+                                      month,
+                                      ref_id: finalBill.billId,
+                                      label: finalBill.clientName,
+                                      pdf_base64,
+                                    });
+                                  } catch {
+                                    /* the bill itself is already saved */
+                                  }
+                                })();
                               },
                             },
                           )

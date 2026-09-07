@@ -60,6 +60,26 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-07 — Ledger grouping by company + live Dashboard tab + archive-on-generate
+- Ledger page: groups keyed by company name (case-insensitive) instead of
+  incubatee_id — companies occupying several labs (Zymolent, Exiss, ZeroHarm)
+  now appear as ONE group with all labs and entries merged. Orphaned records
+  stay in their own "Orphaned — X" group.
+- `savePowerBill`: before appending a new bill number, re-checks against a
+  fresh sheet read; a stale cache could allocate an existing number and
+  OVERWRITE another client's bill row — root cause of "Elia/Nectar bills
+  missing from sheet while showing in app". Regenerate missing bills.
+- `importTenantClients`: one billing client per company, meters seeded for
+  every lab the company occupies (was one client per tenant row).
+- PDF archive now also fires at GENERATION time (billing engine + rent bill
+  dialog), not only on download.
+- Sheet redesign (runs on Settings → "Format workbook" and on connect):
+  currency ₹ format on all amount columns, yyyy-mm-dd on date columns, and a
+  new green "Dashboard" tab — all-time KPIs, 12-month billed/collected/
+  outstanding report, live "who owes what" FILTER tables. Month matching uses
+  SUMPRODUCT(IF(ISNUMBER(...),TEXT(...),LEFT(...))) so it works whether the
+  sheet stored dates as real dates or ISO text.
+
 ### 2026-09-07 — Month-wise PDF archive in Supabase Storage
 - New private bucket `gbpims-pdfs`, bootstrapped lazily via the Storage API on
   first upload (no migration needed; supabaseAdmin service role).

@@ -321,6 +321,48 @@ const PALE_BLUE = { red: 0.91, green: 0.976, blue: 0.984 };
 const PALE_AMBER = { red: 1, green: 0.957, blue: 0.82 };
 const PALE_RED = { red: 1, green: 0.91, blue: 0.91 };
 
+/** Columns rendered as ₹ amounts in the sheet, per tab. */
+const CURRENCY_HEADERS: Partial<Record<TabKey, string[]>> = {
+  labs: ["monthly_rent"],
+  incubatees: ["security_deposit", "monthly_rent"],
+  rent: [
+    "gross_amount",
+    "discount",
+    "rent_amount",
+    "maintenance_amount",
+    "taxable_value",
+    "cgst",
+    "sgst",
+    "round_off",
+    "amount",
+    "amount_paid",
+    "balance",
+  ],
+  ledger: [
+    "energy_charge",
+    "fixed_charge",
+    "arrears",
+    "surcharge",
+    "total_amount",
+    "ac_charge",
+    "electricity_duty",
+    "amount_paid",
+    "balance",
+  ],
+  payments: ["amount"],
+};
+
+/** Columns rendered as yyyy-mm-dd dates in the sheet, per tab. */
+const DATE_HEADERS: Partial<Record<TabKey, string[]>> = {
+  rent: ["invoice_date", "due_date", "payment_date"],
+  ledger: ["bill_date", "due_date", "period_from", "period_to", "payment_date"],
+  payments: ["date"],
+  incubatees: ["allotment_date", "agreement_end", "agreement_start"],
+};
+
+const INR_FORMAT = { type: "CURRENCY", currencyCode: "INR", pattern: "₹#,##0.00" };
+const DATE_FORMAT = { type: "DATE", pattern: "yyyy-mm-dd" };
+
 /**
  * Applies a consistent, presentable look to every tab: brand-green frozen
  * header row, banded rows, filter view and auto-sized columns. Idempotent and
@@ -442,6 +484,30 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
       },
     );
 
+    // Money and date columns: real number formats so the sheet reads like a
+    // report without any manual formatting.
+    const colFormat = (
+      header: string,
+      numberFormat: { type: string; pattern: string },
+    ) => {
+      const idx = HEADERS[tab].indexOf(header);
+      if (idx < 0) return;
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: 1,
+            startColumnIndex: idx,
+            endColumnIndex: idx + 1,
+          },
+          cell: { userEnteredFormat: { numberFormat } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      });
+    };
+    for (const header of CURRENCY_HEADERS[tab] ?? []) colFormat(header, INR_FORMAT);
+    for (const header of DATE_HEADERS[tab] ?? []) colFormat(header, DATE_FORMAT);
+
     decorative.push({
       addBanding: {
         bandedRange: {
@@ -551,6 +617,238 @@ export async function formatWorkbook(spreadsheetId: string): Promise<void> {
     });
   } catch {
     /* already banded */
+  }
+
+  await ensureDashboard(spreadsheetId, byTitle);
+}
+
+const DASHBOARD_TAB = "Dashboard";
+
+/** SUMPRODUCT that matches a "YYYY-MM" month whether the cell is a real date
+ *  or plain ISO text, so the dashboard works with any historical data. */
+function monthSum(tab: string, monthCol: string, sumCol: string, monthCell: string): string {
+  const range = (col: string) => `${tab}!$${col}$2:$${col}$5000`;
+  return (
+    `=SUMPRODUCT((IF(ISNUMBER(${range(monthCol)}),TEXT(${range(monthCol)},"YYYY-MM"),` +
+    `LEFT(${range(monthCol)},7))=${monthCell})*${range(sumCol)})`
+  );
+}
+
+/**
+ * Creates and refreshes the live Dashboard tab: all-time KPIs, a 12-month
+ * billing/collection report and "who owes what" lists — computed entirely
+ * with formulas so the sheet is a report even when the app is closed.
+ */
+async function ensureDashboard(
+  spreadsheetId: string,
+  byTitle: Map<string, number>,
+): Promise<void> {
+  try {
+    let sheetId = byTitle.get(DASHBOARD_TAB);
+    if (sheetId === undefined || sheetId < 0) {
+      await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+        method: "POST",
+        body: JSON.stringify({
+          requests: [{ addSheet: { properties: { title: DASHBOARD_TAB } } }],
+        }),
+      });
+      const fresh = await sheetsApi<MetaIds>(
+        `/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
+      );
+      sheetId = (fresh.sheets ?? []).find(
+        (s) => s.properties?.title === DASHBOARD_TAB,
+      )?.properties?.sheetId;
+      if (sheetId === undefined || sheetId < 0) return;
+    }
+    sheetId = sheetId as number;
+
+    const blank: string[] = ["", "", "", "", "", "", "", "", ""];
+    const rows: string[][] = [];
+    const push = (...cells: string[]) => {
+      const row = [...cells];
+      while (row.length < 9) row.push("");
+      rows.push(row);
+    };
+
+    push("GBP — Manager Dashboard");
+    push(
+      '="Auto-computed from the other tabs · last refreshed "&TEXT(TODAY(),"yyyy-mm-dd")',
+    );
+    push(...blank);
+    push("OVERVIEW", "", "", "", "LIVE COUNTS");
+    push(
+      "Rent billed (all time)",
+      "",
+      "=SUM(RentInvoices!T2:T5000)",
+      "",
+      "Active tenants",
+      '=COUNTIF(Incubatees!M2:M5000,"active")',
+    );
+    push(
+      "Rent collected",
+      "",
+      "=SUM(RentInvoices!U2:U5000)",
+      "",
+      "Labs occupied",
+      '=COUNTIF(Labs!F2:F5000,"occupied")&" / "&COUNTIF(Labs!A2:A5000,"<>")',
+    );
+    push(
+      "Rent outstanding",
+      "",
+      "=SUM(RentInvoices!AG2:AG5000)",
+      "",
+      "Payments recorded (₹)",
+      "=SUM(Payments!F2:F5000)",
+    );
+    push(
+      "Electricity billed",
+      "",
+      "=SUM(PowerLedger!S2:S5000)",
+      "",
+      "Unpaid electricity bills",
+      '=COUNTIF(PowerLedger!T2:T5000,"unpaid")+COUNTIF(PowerLedger!T2:T5000,"partial")',
+    );
+    push(
+      "Electricity collected",
+      "",
+      "=SUM(PowerLedger!AF2:AF5000)",
+      "",
+      "Pending/overdue rent invoices",
+      '=COUNTIF(RentInvoices!V2:V5000,"pending")+COUNTIF(RentInvoices!V2:V5000,"overdue")+COUNTIF(RentInvoices!V2:V5000,"partial")',
+    );
+    push("Electricity outstanding", "", "=SUM(PowerLedger!AG2:AG5000)");
+    push("TOTAL OUTSTANDING (₹)", "", "=C7+C10");
+    push(...blank);
+    push("MONTHLY REPORT — LAST 12 MONTHS");
+    push(
+      "Month",
+      "Rent billed",
+      "Rent collected",
+      "Electricity billed",
+      "Electricity collected",
+      "Outstanding",
+    );
+    for (let i = 0; i < 12; i += 1) {
+      const row = rows.length + 1;
+      const monthCell = `$A${row}`;
+      push(
+        `=TEXT(EOMONTH(TODAY(),${i - 11}),"YYYY-MM")`,
+        monthSum("RentInvoices", "F", "T", monthCell),
+        monthSum("RentInvoices", "F", "U", monthCell),
+        monthSum("PowerLedger", "D", "S", monthCell),
+        monthSum("PowerLedger", "D", "AF", monthCell),
+        `=MAX(0,(B${row}-C${row})+(D${row}-E${row}))`,
+      );
+    }
+    push(...blank);
+    push("WHO OWES WHAT — RENT", "", "", "", "", "", "", "ELECTRICITY OUTSTANDING");
+    push("Tenant", "Amount (₹)", "", "", "", "", "", "Client", "Amount (₹)");
+    push(
+      `=IFERROR(FILTER({RentInvoices!D2:D5000,RentInvoices!AG2:AG5000},RentInvoices!AG2:AG5000>0),"—")`,
+    );
+    // Same row: electricity table lives in H/I.
+    rows[rows.length - 1]![
+      7
+    ] = `=IFERROR(FILTER({PowerLedger!C2:C5000,PowerLedger!AG2:AG5000},PowerLedger!AG2:AG5000>0),"—")`;
+
+    await sheetsApi(`/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+      method: "POST",
+      body: JSON.stringify({
+        valueInputOption: "USER_ENTERED",
+        data: [
+          {
+            range: `${DASHBOARD_TAB}!A1:I${rows.length}`,
+            values: rows,
+          },
+        ],
+      }),
+    });
+
+    // Dashboard styling: brand header, bold labels, currency cells, widths.
+    const fmt = (
+      r0: number,
+      r1: number | undefined,
+      c0: number,
+      c1: number,
+      cell: Record<string, unknown>,
+      fields: string,
+    ) => ({
+      repeatCell: {
+        range: { sheetId, startRowIndex: r0, ...(r1 !== undefined ? { endRowIndex: r1 } : {}), startColumnIndex: c0, endColumnIndex: c1 },
+        cell: { userEnteredFormat: cell },
+        fields,
+      },
+    });
+    const bold = fmt(0, undefined, 0, 9, { textFormat: { bold: true } }, "userEnteredFormat.textFormat");
+    await sheetsApi(`/spreadsheets/${spreadsheetId}:batchUpdate`, {
+      method: "POST",
+      body: JSON.stringify({
+        requests: [
+          {
+            updateSheetProperties: {
+              properties: { sheetId, tabColor: BRAND },
+              fields: "tabColor",
+            },
+          },
+          {
+            mergeCells: {
+              range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 },
+              mergeType: "MERGE_ALL",
+            },
+          },
+          fmt(
+            0,
+            1,
+            0,
+            9,
+            {
+              backgroundColor: BRAND,
+              textFormat: { bold: true, fontSize: 14, foregroundColor: { red: 1, green: 1, blue: 1 } },
+              verticalAlignment: "MIDDLE",
+            },
+            "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+          ),
+          fmt(
+            1,
+            2,
+            0,
+            9,
+            {
+              textFormat: { italic: true, fontSize: 9, foregroundColor: { red: 0.45, green: 0.5, blue: 0.5 } },
+            },
+            "userEnteredFormat.textFormat",
+          ),
+          fmt(3, 4, 0, 9, { textFormat: { bold: true, fontSize: 11, foregroundColor: BRAND } }, "userEnteredFormat.textFormat"),
+          fmt(12, 13, 0, 6, { textFormat: { bold: true, fontSize: 11, foregroundColor: BRAND } }, "userEnteredFormat.textFormat"),
+          fmt(27, 28, 0, 9, { textFormat: { bold: true, fontSize: 11, foregroundColor: BRAND } }, "userEnteredFormat.textFormat"),
+          // KPI labels + values
+          fmt(4, 11, 0, 1, { textFormat: { bold: true } }, "userEnteredFormat.textFormat"),
+          fmt(4, 11, 2, 3, { numberFormat: INR_FORMAT }, "userEnteredFormat.numberFormat"),
+          fmt(4, 9, 4, 5, { textFormat: { bold: true } }, "userEnteredFormat.textFormat"),
+          fmt(6, 7, 5, 6, { numberFormat: INR_FORMAT }, "userEnteredFormat.numberFormat"),
+          // Monthly report header row + months
+          fmt(13, 14, 0, 6, { textFormat: { bold: true }, backgroundColor: PALE_GREEN }, "userEnteredFormat(textFormat,backgroundColor)"),
+          fmt(14, 26, 0, 1, { textFormat: { bold: true } }, "userEnteredFormat.textFormat"),
+          fmt(14, 26, 1, 6, { numberFormat: INR_FORMAT }, "userEnteredFormat.numberFormat"),
+          // Who-owes tables (rows 29-30 headers, 30+ spilled data)
+          fmt(28, 30, 0, 2, { textFormat: { bold: true } }, "userEnteredFormat.textFormat"),
+          fmt(28, 30, 7, 9, { textFormat: { bold: true } }, "userEnteredFormat.textFormat"),
+          fmt(30, undefined, 1, 2, { numberFormat: INR_FORMAT }, "userEnteredFormat.numberFormat"),
+          fmt(30, undefined, 8, 9, { numberFormat: INR_FORMAT }, "userEnteredFormat.numberFormat"),
+          ...[0, 1, 2, 3, 4, 5, 7, 8].map((c) => ({
+            updateDimensionProperties: {
+              range: { sheetId, dimension: "COLUMNS", startIndex: c, endIndex: c + 1 },
+              properties: { pixelSize: c === 0 || c === 7 ? 250 : 150 },
+              fields: "pixelSize",
+            },
+          })),
+        ],
+      }),
+    });
+  } catch (err) {
+    console.warn(
+      `[sheets] dashboard skipped: ${(err as Error).message.slice(0, 160)}`,
+    );
   }
 }
 

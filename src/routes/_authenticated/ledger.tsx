@@ -202,20 +202,34 @@ function LedgerPage() {
     setDownloader(() => () => void downloadRentInvoicePdf(data));
   }
 
-  /** Every rent invoice + electricity bill grouped under the client that owes it. */
+  /** Every rent invoice + electricity bill grouped under the client that owes it.
+   *  Tenants are matched by company name (case-insensitive) so a company
+   *  occupying several labs — recorded as multiple tenant rows — appears as
+   *  ONE ledger group with every lab and entry merged. */
   const ledgers: ClientLedger[] = useMemo(() => {
     const map = new Map<string, ClientLedger>();
-    const ensure = (id: string, name: string, lab: string, phone: string, orphan: boolean) => {
+    const keyOf = (name: string) => name.trim().toLowerCase();
+    const ensure = (name: string, lab: string, phone: string, orphan: boolean) => {
+      const id = keyOf(name) || `orphan:${name}`;
       const existing = map.get(id);
       if (existing) {
-        if (!existing.lab && lab) existing.lab = lab;
+        const labIds = new Set(
+          existing.lab.split(",").map((s) => s.trim()).filter(Boolean),
+        );
+        if (lab) lab.split(",").forEach((s) => labIds.add(s.trim()));
+        existing.lab = [...labIds].sort().join(", ");
         if (!existing.phone && phone) existing.phone = phone;
         return existing;
       }
       const fresh: ClientLedger = {
         id,
-        name,
-        lab,
+        name: name.trim(),
+        lab: lab
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .sort()
+          .join(", "),
         phone,
         entries: [],
         billed: 0,
@@ -232,7 +246,6 @@ function LedgerPage() {
       .filter((i) => (i["incubatee_id"] ?? "").trim() !== "")
       .forEach((i) =>
         ensure(
-          i["incubatee_id"] ?? "",
           i["company_name"] || i["founder_name"] || (i["incubatee_id"] ?? ""),
           i["lab_id"] ?? "",
           i["phone"] ?? "",
@@ -241,8 +254,9 @@ function LedgerPage() {
       );
 
     rentRows.forEach((r) => {
-      const id = r.orphan || !r.incubateeId ? `orphan:${r.company}` : r.incubateeId;
-      const c = ensure(id, r.company, r.labId, r.phone, r.orphan);
+      const orphan = r.orphan || !r.incubateeId;
+      const name = orphan ? `Orphaned — ${r.company || "unknown"}` : r.company;
+      const c = ensure(name, r.labId, r.phone, orphan);
       c.entries.push({
         key: `rent:${r.invoiceId}`,
         kind: "rent",
@@ -266,9 +280,20 @@ function LedgerPage() {
     bills.forEach((b) => {
       const client = clients.find((c) => c.clientId === b.clientId);
       const tenantId = (client?.incubateeId ?? "").trim();
-      const orphan = isOrphanBill(b, clients) || tenantId === "";
-      const id = orphan ? `orphan:${b.clientName}` : tenantId;
-      const c = ensure(id, b.clientName, "", client?.whatsapp ?? "", orphan);
+      // Resolve the company name from the billing client, falling back to the
+      // tenant list so a client row without an incubatee link still merges
+      // under the right company instead of showing as a separate entry.
+      const tenant = tenantId
+        ? (wb?.incubatees ?? []).find((i) => i["incubatee_id"] === tenantId)
+        : undefined;
+      const companyName =
+        tenant?.["company_name"]?.trim() ||
+        client?.name?.trim() ||
+        b.clientName?.trim() ||
+        "";
+      const orphan = isOrphanBill(b, clients) || companyName === "";
+      const name = orphan ? `Orphaned — ${b.clientName || "unknown"}` : companyName;
+      const c = ensure(name, "", client?.whatsapp ?? "", orphan);
       c.entries.push({
         key: `power:${b.billId}`,
         kind: "power",
