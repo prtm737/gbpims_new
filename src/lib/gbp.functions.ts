@@ -22,12 +22,16 @@ export const getMe = createServerFn({ method: "GET" })
 export const getWorkbook = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { getMyRole, loadWorkbook, workbookStatus } = await import("./gbp.server");
+    const { getMyRole, loadWorkbook, workbookStatus, upgradeWorkbookOnce } =
+      await import("./gbp.server");
     const [role, status] = await Promise.all([
       getMyRole(context.supabase, context.userId),
       workbookStatus(),
     ]);
     if (!status.connected) return { connected: false as const, role, data: null };
+    // Apply the one-time-per-day workbook upgrade (Dashboard tab, sheet
+    // formatting) so the sheet improves itself without manual steps.
+    void upgradeWorkbookOnce();
     const data = await loadWorkbook();
     return { connected: true as const, role, url: status.url, data };
   });
@@ -40,12 +44,14 @@ export const getWorkbook = createServerFn({ method: "GET" })
 export const getFreshWorkbook = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { getMyRole, loadWorkbook, workbookStatus } = await import("./gbp.server");
+    const { getMyRole, loadWorkbook, workbookStatus, upgradeWorkbookOnce } =
+      await import("./gbp.server");
     const [role, status] = await Promise.all([
       getMyRole(context.supabase, context.userId),
       workbookStatus(),
     ]);
     if (!status.connected) return { connected: false as const, role, data: null };
+    void upgradeWorkbookOnce();
     const data = await loadWorkbook({ fresh: true });
     return { connected: true as const, role, url: status.url, data };
   });

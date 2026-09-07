@@ -158,6 +158,34 @@ export async function loadWorkbook(
   return wb;
 }
 
+// The workbook upgrade (formatting + Dashboard tab + legacy-tab cleanup) runs
+// at most once per server process per day, and only once per spreadsheet.
+const UPGRADE_TTL_MS = 24 * 60 * 60_000;
+const lastUpgrade = new Map<string, number>();
+
+/**
+ * One-time-per-day self-heal: applies the new look (Dashboard tab, currency
+ * and date formats, deletes the empty legacy ElectricityBills tab) without
+ * anyone having to press a button. Failures are silent — formatting must
+ * never block loading data.
+ */
+export function upgradeWorkbookOnce(): Promise<void> {
+  return upgradeWorkbookInBoot();
+}
+
+async function upgradeWorkbookInBoot(): Promise<void> {
+  try {
+    const id = await requireSpreadsheetId();
+    const at = lastUpgrade.get(id) ?? 0;
+    if (Date.now() - at < UPGRADE_TTL_MS) return;
+    lastUpgrade.set(id, Date.now());
+    const { ensureWorkbook } = await import("./sheets.server");
+    await ensureWorkbook(id);
+  } catch {
+    /* cosmetic only — data access must never fail because of formatting */
+  }
+}
+
 export async function workbookStatus() {
   const spreadsheetId = await getConfig("spreadsheet_id");
   if (!spreadsheetId) return { connected: false as const };

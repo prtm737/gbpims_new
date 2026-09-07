@@ -60,6 +60,15 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-07 — Auto workbook upgrade (no manual button needed)
+- `upgradeWorkbookOnce()` in gbp.server.ts: once per day per server instance,
+  the first workbook load fires `ensureWorkbook` in the background — applies
+  formatting, creates the Dashboard tab, deletes the empty legacy
+  ElectricityBills tab. Triggered fire-and-forget from getWorkbook/getFresh
+  Workbook; silent failures only.
+- Reason: user expected the sheet to change automatically; "Format workbook"
+  button lives on the Settings page and was never pressed.
+
 ### 2026-09-07 — Ledger grouping by company + live Dashboard tab + archive-on-generate
 - Ledger page: groups keyed by company name (case-insensitive) instead of
   incubatee_id — companies occupying several labs (Zymolent, Exiss, ZeroHarm)
