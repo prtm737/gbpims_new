@@ -19,7 +19,7 @@ import { StatCard } from "@/components/stat-card";
 import { useWorkbookState } from "@/components/workbook-state";
 import { Button } from "@/components/ui/button";
 import { downloadCsv, duesByKind, monthlySplitSeries, summary } from "@/lib/derive";
-import { inr, monthLabel } from "@/lib/sheets-schema";
+import { inr, monthLabel, num } from "@/lib/sheets-schema";
 
 export const Route = createFileRoute("/_authenticated/reports")({
   head: () => ({
@@ -79,6 +79,27 @@ function ReportsPage() {
     const s = summary(wb);
     const series = monthlySplitSeries(wb);
     const kinds = duesByKind(wb);
+    // Security-deposit register: total held vs refundable for exited tenants.
+    const deposits = (() => {
+      const rows = wb.incubatees
+        .filter((i) => num(i["security_deposit"]) > 0)
+        .map((i) => ({
+          id: i["incubatee_id"] ?? i["company_name"] ?? "",
+          company: i["company_name"] || "Unnamed",
+          labId: i["lab_id"] ?? "",
+          deposit: num(i["security_deposit"]),
+          status: i["status"] || "active",
+        }));
+      const active = rows.filter((r) => r.status !== "exited");
+      const exited = rows.filter((r) => r.status === "exited");
+      return {
+        all: [...active, ...exited],
+        active,
+        exited,
+        activeTotal: active.reduce((sum, r) => sum + r.deposit, 0),
+        exitedTotal: exited.reduce((sum, r) => sum + r.deposit, 0),
+      };
+    })();
     const occupancyData = [
       { name: "Occupied", value: s.occupied },
       { name: "Vacant", value: s.vacant },
@@ -213,6 +234,76 @@ function ReportsPage() {
               ))}
               {arrears.length === 0 && (
                 <li className="py-4 text-center text-muted-foreground">No arrears. All clear.</li>
+              )}
+            </ul>
+          </section>
+          <section className="rounded-lg border border-border bg-card p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-display text-sm font-semibold">Security deposits held</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Deposits of active tenants. Exited tenants show separately for refund tracking.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  downloadCsv("gbp-deposits.csv", [
+                    ...deposits.active.map((d) => ({
+                      company: d.company,
+                      lab: d.labId,
+                      deposit: d.deposit,
+                      status: d.status,
+                    })),
+                    ...deposits.exited.map((d) => ({
+                      company: d.company,
+                      lab: d.labId,
+                      deposit: d.deposit,
+                      status: d.status,
+                    })),
+                  ])
+                }
+              >
+                <Download className="size-3.5" /> CSV
+              </Button>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <StatCard
+                label="Held (active tenants)"
+                value={inr(deposits.activeTotal)}
+                tone="positive"
+              />
+              <StatCard
+                label="Exited — refund due"
+                value={inr(deposits.exitedTotal)}
+                tone="warning"
+              />
+            </div>
+            <ul className="mt-3 max-h-72 divide-y divide-border overflow-y-auto text-sm">
+              {deposits.all.map((d) => (
+                <li key={d.id} className="flex items-center justify-between gap-3 py-2">
+                  <span className="min-w-0 truncate">
+                    {d.company}
+                    <span className="text-xs text-muted-foreground"> · {d.labId || "no space"}</span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="font-semibold">{inr(d.deposit)}</span>
+                    <span
+                      className={
+                        "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase " +
+                        (d.status === "exited"
+                          ? "bg-muted text-muted-foreground"
+                          : "bg-primary/10 text-primary")
+                      }
+                    >
+                      {d.status}
+                    </span>
+                  </span>
+                </li>
+              ))}
+              {deposits.all.length === 0 && (
+                <li className="py-4 text-center text-muted-foreground">No deposits on record.</li>
               )}
             </ul>
           </section>

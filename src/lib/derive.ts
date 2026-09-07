@@ -241,7 +241,16 @@ export function whatsappLink(phone: string, message: string): string {
 }
 
 /** Polite payment reminder for a pending due. */
-export function reminderMessage(row: DueRow, parkName: string): string {
+export function reminderMessage(row: {
+  kind: "rent" | "electricity";
+  company: string;
+  month: string;
+  amount: number;
+  paid: number;
+  balance: number;
+  dueDate: string;
+  labId?: string | undefined;
+}, parkName: string): string {
   const kind = row.kind === "rent" ? "rent" : "electricity";
   return [
     `Dear ${row.company},`,

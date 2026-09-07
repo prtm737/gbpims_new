@@ -22,7 +22,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { saveManualPowerEntryFn } from "@/lib/gbp.functions";
 import type { PowerBill, PowerClient } from "@/lib/power";
-import type { Workbook } from "@/lib/sheets-schema";
+import { formatAmount, type Workbook } from "@/lib/sheets-schema";
 import { useSheetMutation } from "@/lib/use-app-data";
 
 type Option = { value: string; label: string; hint: string };
@@ -191,8 +191,7 @@ export function ManualPowerEntryDialog({
             <div className="space-y-1.5">
               <Label>Units (optional)</Label>
               <Input
-                type="number"
-                inputMode="decimal"
+                inputMode="numeric"
                 min="0"
                 value={form.units}
                 onChange={(e) => setForm({ ...form, units: e.target.value })}
@@ -202,11 +201,11 @@ export function ManualPowerEntryDialog({
           <div className="space-y-1.5">
             <Label>Electricity amount payable</Label>
             <Input
-              type="number"
               inputMode="decimal"
               min="0"
               value={form.total}
               onChange={(e) => setForm({ ...form, total: e.target.value })}
+              onBlur={(e) => setForm((f) => ({ ...f, total: formatAmount(e.target.value) }))}
               required
             />
           </div>

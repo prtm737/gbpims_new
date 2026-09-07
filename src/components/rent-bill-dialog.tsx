@@ -26,6 +26,7 @@ import type { RentDraftFields } from "@/lib/rent-invoices";
 import {
   computeRentBill,
   DEFAULT_SETTINGS,
+  formatAmount,
   grossRent,
   gstEnabled,
   inr,
@@ -284,6 +285,7 @@ export function RentBillDialog({
                 inputMode="decimal"
                 value={gross}
                 onChange={(e) => setGross(e.target.value)}
+                onBlur={(e) => setGross(formatAmount(e.target.value))}
                 placeholder={autoGross ? String(autoGross) : "auto from area"}
               />
             </div>
@@ -304,6 +306,7 @@ export function RentBillDialog({
                 inputMode="decimal"
                 value={discountAmount}
                 onChange={(e) => setDiscountAmount(e.target.value)}
+                onBlur={(e) => setDiscountAmount(formatAmount(e.target.value))}
                 placeholder={tenant?.["discount_amount"] || "0"}
               />
             </div>
@@ -324,6 +327,7 @@ export function RentBillDialog({
                 inputMode="decimal"
                 value={maintenanceAmount}
                 onChange={(e) => setMaintenanceAmount(e.target.value)}
+                onBlur={(e) => setMaintenanceAmount(formatAmount(e.target.value))}
                 placeholder="auto"
               />
             </div>

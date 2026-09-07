@@ -311,7 +311,8 @@ export function spaceTypeLabel(value: string | undefined): string {
 
 export function num(value: string | undefined | null): number {
   if (!value) return 0;
-  const n = Number(String(value).replace(/[^0-9.-]/g, ""));
+  // Strip Indian-style grouping commas ("12,34,567") before parsing.
+  const n = Number(String(value).replace(/[,\s₹]/g, ""));
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -691,4 +692,15 @@ export function dateLabel(date: string | undefined): string {
   const t = new Date(date);
   if (Number.isNaN(t.getTime())) return date;
   return t.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+/** Indian-style grouping (12,34,567) for amount inputs; num() reads it fine. */
+export function formatAmount(value: string): string {
+  const cleaned = value.replace(/[^0-9.]/g, "");
+  if (cleaned === "") return "";
+  const dot = cleaned.indexOf(".");
+  const intPart = dot === -1 ? cleaned : cleaned.slice(0, dot);
+  const decPart = dot === -1 ? "" : cleaned.slice(dot);
+  const grouped = intPart === "" ? "" : Number(intPart).toLocaleString("en-IN");
+  return `${grouped}${decPart}`;
 }

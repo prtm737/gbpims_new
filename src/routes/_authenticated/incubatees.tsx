@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Plus } from "lucide-react";
+import { Plus, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
@@ -217,6 +217,19 @@ function IncubateesPage() {
                 e.preventDefault();
                 const f = new FormData(e.currentTarget);
                 const get = (k: string) => String(f.get(k) ?? "");
+                // Duplicate guard: a company already on record probably means
+                // the tenant should be edited, not entered twice.
+                const name = get("company_name").trim().toLowerCase();
+                const duplicate =
+                  !draft["incubatee_id"] &&
+                  wb?.incubatees.some(
+                    (i) =>
+                      (i["company_name"] ?? "").trim().toLowerCase() === name &&
+                      (i["status"] ?? "active") !== "exited",
+                  );
+                if (duplicate && !window.confirm(`"${get("company_name")}" already exists as a tenant. Add another row for the same company anyway?\n\nChoose Cancel if you meant to edit the existing tenant instead.`)) {
+                  return;
+                }
                 save.mutate(
                   {
                     data: {
@@ -254,6 +267,18 @@ function IncubateesPage() {
                   maxLength={120}
                   defaultValue={draft["company_name"] ?? ""}
                 />
+                {!draft["incubatee_id"] &&
+                  wb?.incubatees.some(
+                    (i) =>
+                      (i["status"] ?? "active") !== "exited" &&
+                      (i["company_name"] ?? "").trim().toLowerCase() ===
+                        (draft["company_name"] ?? "").trim().toLowerCase(),
+                  ) && (
+                    <p className="flex items-center gap-1.5 text-xs text-amber-600">
+                      <TriangleAlert className="size-3.5" /> A tenant with this name already
+                      exists — consider editing that row instead.
+                    </p>
+                  )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">

@@ -182,3 +182,71 @@
   background-clip: text;
   color: transparent;
 }
+
+/* ---- app motion: gentle, purposeful ---- */
+@keyframes gbp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes gbp-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@utility animate-fade-up {
+  animation: gbp-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-fade-in {
+  animation: gbp-fade-in 0.35s ease-out both;
+}
+
+@utility card-hover {
+  transition:
+    box-shadow 0.25s ease,
+    transform 0.25s ease,
+    border-color 0.25s ease;
+}
+@utility card-hover {
+  &:hover {
+    box-shadow: 0 10px 30px -12px rgb(0 0 0 / 0.18);
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes gbp-pop {
+  0% {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@utility animate-pop {
+  animation: gbp-pop 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Respect users who prefer less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

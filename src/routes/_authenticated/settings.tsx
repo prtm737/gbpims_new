@@ -17,8 +17,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  backupNowFn,
   connectSheet,
   formatWorkbookFn,
+  getBackupDownloadUrlFn,
+  listBackupsFn,
   listStaffFn,
   saveSettingsFn,
   setUserRoleFn,
@@ -158,6 +161,10 @@ function SettingsPage() {
         </section>
 
         {connected && (
+          <BackupsCard isAdmin={isAdmin} />
+        )}
+
+        {connected && (
           <section className="rounded-lg border border-border bg-card p-4">
             <h2 className="font-display text-sm font-semibold">Billing defaults</h2>
             {fallback ? (
@@ -246,5 +253,81 @@ function SettingsPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+/** Daily automatic workbook backups stored in Supabase, with manual download. */
+function BackupsCard({ isAdmin }: { isAdmin: boolean }) {
+  const listFn = useServerFn(listBackupsFn);
+  const urlFn = useServerFn(getBackupDownloadUrlFn);
+  const backupNow = useSheetMutation(useServerFn(backupNowFn), "Backup created");
+  const files = useQuery({
+    queryKey: ["backups"],
+    queryFn: () => listFn() as Promise<{ files: { path: string; day: string; size: number; updatedAt: string }[] }>,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function download(path: string) {
+    setBusy(path);
+    try {
+      const out = (await urlFn({ data: { path } })) as { url: string };
+      window.open(out.url, "_blank", "noopener");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const list = files.data?.files ?? [];
+  return (
+    <section className="rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-display text-sm font-semibold">Data backups</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            A full copy of every tab is saved here automatically each day (90 days kept).
+          </p>
+        </div>
+        {isAdmin && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={backupNow.isPending}
+            onClick={() => backupNow.mutate({ data: undefined })}
+          >
+            {backupNow.isPending ? "Backing up…" : "Back up now"}
+          </Button>
+        )}
+      </div>
+      {list.length === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">
+          {files.isLoading ? "Checking for backups…" : "No backups yet — the first one appears within a day of opening the app."}
+        </p>
+      ) : (
+        <ul className="mt-3 divide-y divide-border">
+          {list.map((f) => (
+            <li key={f.path} className="flex items-center justify-between gap-3 py-2">
+              <span className="min-w-0 text-sm">
+                <span className="font-medium">{f.day}</span>
+                <span className="ml-2 text-xs text-muted-foreground">
+                  {f.size > 1024 * 1024
+                    ? `${(f.size / (1024 * 1024)).toFixed(1)} MB`
+                    : `${Math.max(1, Math.round(f.size / 1024))} KB`}
+                </span>
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy === f.path}
+                onClick={() => void download(f.path)}
+              >
+                {busy === f.path ? "Opening…" : "Download"}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

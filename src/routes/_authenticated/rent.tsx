@@ -40,7 +40,18 @@ function RentPage() {
   const [month, setMonth] = useState(currentMonth());
   const [draft, setDraft] = useState<RentDraft | null>(null);
   const [payFor, setPayFor] = useState<RentInvoiceView | null>(null);
-  const generate = useSheetMutation(useServerFn(generateRentFn), "Rent invoices generated");
+  const generate = useSheetMutation(
+    useServerFn(generateRentFn),
+    (out) => {
+      const parts = [`${out.created} created`];
+      if (out.updated > 0) parts.push(`${out.updated} refreshed`);
+      parts.push(`${out.tenants} tenants billed`);
+      if (out.skipped?.length) {
+        parts.push(`skipped (no space): ${out.skipped.join(", ")}`);
+      }
+      return parts.join(" · ");
+    },
+  );
   const remove = useSheetMutation(useServerFn(deleteRentInvoiceFn), "Invoice deleted");
 
   const creator = canCreate(role);

@@ -22,7 +22,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { saveManualRentEntryFn } from "@/lib/gbp.functions";
-import { currentMonth, inr, type Workbook } from "@/lib/sheets-schema";
+import { currentMonth, formatAmount, inr, type Workbook } from "@/lib/sheets-schema";
 import { useSheetMutation } from "@/lib/use-app-data";
 
 /** Feed a rent bill that was raised manually outside the app into the rent ledger. */
@@ -169,22 +169,24 @@ export function ManualRentEntryDialog({
             <div className="space-y-1.5">
               <Label>Rent amount</Label>
               <Input
-                type="number"
                 inputMode="decimal"
                 min="0"
                 value={form.rent}
                 onChange={(e) => setForm({ ...form, rent: e.target.value })}
+                onBlur={(e) => setForm((f) => ({ ...f, rent: formatAmount(e.target.value) }))}
                 required
               />
             </div>
             <div className="space-y-1.5">
               <Label>Electricity charges</Label>
               <Input
-                type="number"
                 inputMode="decimal"
                 min="0"
                 value={form.maintenance}
                 onChange={(e) => setForm({ ...form, maintenance: e.target.value })}
+                onBlur={(e) =>
+                  setForm((f) => ({ ...f, maintenance: formatAmount(e.target.value) }))
+                }
               />
             </div>
           </div>

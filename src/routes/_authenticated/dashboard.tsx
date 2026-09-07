@@ -8,6 +8,7 @@ import { LabAllotmentTable } from "@/components/lab-allotment-table";
 import { OccupancyMap } from "@/components/occupancy-map";
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
 import { StatCard } from "@/components/stat-card";
+import { TodayChecklist } from "@/components/today-checklist";
 import { canWrite, useWorkbookState } from "@/components/workbook-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -80,6 +81,8 @@ function DashboardPage() {
             {s.overdue.length} overdue bills
           </p>
         </section>
+
+        <TodayChecklist wb={wb} />
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <StatCard

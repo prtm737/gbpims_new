@@ -60,6 +60,30 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-07 — Office-workflow upgrade batch (all 9 audit items)
+- Daily backup: backup.server.ts writes backups/<date>/workbook.json into the
+  gbpims-pdfs bucket (90 days kept, auto-pruned). Fires once/day from
+  getWorkbook/getFreshWorkbook; manual "Back up now" + downloadable list in
+  Settings (listBackupsFn/getBackupDownloadUrlFn/backupNowFn).
+- Dashboard: TodayChecklist card (rent generated? electricity unpaid?
+  overdue? leases expiring 60d? backup status) with progress bar.
+- Ledger: "Remind all" opens BulkReminderDialog — walks overdue rent +
+  electricity dues one-by-one through WhatsApp (reminderMessage loosened to a
+  structural type).
+- Incubatees: duplicate company-name guard — inline amber hint + confirm()
+  before creating a second active row with the same name.
+- Generate rent: response includes skipped[] (companies with no space); the
+  toast lists created/refreshed/skipped by name.
+- GlobalSearch palette in AppShell header (Ctrl/⌘-K or "/"): tenants, spaces,
+  rent invoices, electricity bills with amounts and due info; links to pages.
+- Reports: security-deposit register (held vs refundable, CSV export).
+- Money inputs (rent dialog, manual rent/power entry) get Indian comma
+  grouping on blur via formatAmount(); num() strips commas so grouped values
+  parse everywhere.
+- UI polish: gbp-fade-up/gbp-fade-in/gbp-pop keyframes + card-hover utility,
+  prefers-reduced-motion guard; StatCard lift+fade; page content fade-in;
+  nav items and all buttons animate press (active:scale).
+
 ### 2026-09-07 — Fixed 400 on Format workbook after rename deploy
 - Symptom: "Unable to parse range: ElectricityBills!A1:AG5000" when pressing
   Format workbook; sheet unchanged.

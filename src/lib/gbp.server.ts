@@ -173,6 +173,25 @@ export function upgradeWorkbookOnce(): Promise<void> {
   return upgradeWorkbookInBoot();
 }
 
+// Daily workbook backup: fires with the first workbook load of the day.
+const lastBackup = new Map<string, number>();
+
+/** Fire-and-forget daily backup; failures are silent by design. */
+export function backupWorkbookOnce(): Promise<void> {
+  return (async () => {
+    try {
+      const key = "daily";
+      const at = lastBackup.get(key) ?? 0;
+      if (Date.now() - at < 20 * 60 * 60_000) return;
+      lastBackup.set(key, Date.now());
+      const { runDailyBackup } = await import("./backup.server");
+      await runDailyBackup(() => loadWorkbook({ fresh: true }));
+    } catch {
+      /* backups must never break a page load */
+    }
+  })();
+}
+
 async function upgradeWorkbookInBoot(): Promise<void> {
   try {
     const id = await requireSpreadsheetId();
@@ -705,6 +724,9 @@ export async function generateRentInvoices(month: string) {
   const active = wb.incubatees.filter(
     (r) => r["status"] !== "exited" && String(r["lab_id"] ?? "").trim() !== "",
   );
+  const skippedNoLab = wb.incubatees.filter(
+    (r) => r["status"] !== "exited" && String(r["lab_id"] ?? "").trim() === "",
+  );
   if (active.length === 0) {
     throw new Error(
       "No active tenant is allotted to a space yet, so there is nothing to invoice. Add a tenant with a space on the Tenants page first.",
@@ -790,7 +812,12 @@ export async function generateRentInvoices(month: string) {
   }
 
   await appendRows(id, "rent", rows);
-  return { created: rows.length, updated, tenants: active.length };
+  return {
+    created: rows.length,
+    updated,
+    tenants: active.length,
+    skipped: skippedNoLab.map((s) => String(s["company_name"] ?? s["incubatee_id"] ?? "Unnamed")),
+  };
 }
 
 /* ----------------------------- payments --------------------------------- */

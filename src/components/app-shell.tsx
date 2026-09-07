@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   Building2,
+  Search,
   ExternalLink,
   FileSignature,
   LayoutDashboard,
@@ -14,10 +15,11 @@ import {
   Users,
   Zap,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { AppBackdrop } from "@/components/app-backdrop";
 import { BrandLogo } from "@/components/brand-logo";
+import { GlobalSearch } from "@/components/global-search";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -27,7 +29,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { authClient } from "@/lib/auth-client";
-import { useMe } from "@/lib/use-app-data";
+import { useMe, useWorkbook } from "@/lib/use-app-data";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -62,6 +64,26 @@ export function AppShell({
   const queryClient = useQueryClient();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [moreOpen, setMoreOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const { data: workbook } = useWorkbook();
+
+  // Ctrl/⌘-K or "/" opens the global search anywhere in the app.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target?.isContentEditable ?? false);
+      if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !typing)) {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function signOut() {
     await queryClient.cancelQueries();
@@ -90,7 +112,7 @@ export function AppShell({
               key={item.to}
               to={item.to}
               className={cn(
-                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-all",
+                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 active:scale-[0.98]",
                 pathname === item.to
                   ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-[inset_2px_0_0_0_var(--sidebar-primary)]"
                   : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
@@ -139,6 +161,14 @@ export function AppShell({
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {actions}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSearchOpen(true)}
+                aria-label="Search"
+              >
+                <Search className="size-4" />
+              </Button>
               {sheetUrl && (
                 <Button
                   asChild
@@ -165,8 +195,15 @@ export function AppShell({
           </div>
         </header>
 
-        <main className="relative z-10 flex-1 px-4 py-4 lg:px-8 lg:py-6">{children}</main>
+        <main className="animate-fade-in relative z-10 flex-1 px-4 py-4 lg:px-8 lg:py-6">{children}</main>
       </div>
+
+      {searchOpen && (
+        <GlobalSearch
+          wb={workbook?.connected ? (workbook.data ?? null) : null}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
 
       <nav className="fixed right-0 bottom-0 left-0 z-30 grid grid-cols-6 border-t border-border bg-card/97 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_-18px_oklch(0.3_0.05_200/0.5)] backdrop-blur-xl lg:hidden">
         {NAV.filter((item) => MOBILE_PRIMARY.includes(item.to as (typeof MOBILE_PRIMARY)[number])).map(

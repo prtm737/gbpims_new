@@ -22,7 +22,7 @@ export const getMe = createServerFn({ method: "GET" })
 export const getWorkbook = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { getMyRole, loadWorkbook, workbookStatus, upgradeWorkbookOnce } =
+    const { getMyRole, loadWorkbook, workbookStatus, upgradeWorkbookOnce, backupWorkbookOnce } =
       await import("./gbp.server");
     const [role, status] = await Promise.all([
       getMyRole(context.supabase, context.userId),
@@ -32,6 +32,7 @@ export const getWorkbook = createServerFn({ method: "GET" })
     // Apply the one-time-per-day workbook upgrade (Dashboard tab, sheet
     // formatting) so the sheet improves itself without manual steps.
     void upgradeWorkbookOnce();
+    void backupWorkbookOnce();
     const data = await loadWorkbook();
     return { connected: true as const, role, url: status.url, data };
   });
@@ -44,7 +45,7 @@ export const getWorkbook = createServerFn({ method: "GET" })
 export const getFreshWorkbook = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { getMyRole, loadWorkbook, workbookStatus, upgradeWorkbookOnce } =
+    const { getMyRole, loadWorkbook, workbookStatus, upgradeWorkbookOnce, backupWorkbookOnce } =
       await import("./gbp.server");
     const [role, status] = await Promise.all([
       getMyRole(context.supabase, context.userId),
@@ -52,8 +53,40 @@ export const getFreshWorkbook = createServerFn({ method: "GET" })
     ]);
     if (!status.connected) return { connected: false as const, role, data: null };
     void upgradeWorkbookOnce();
+    void backupWorkbookOnce();
     const data = await loadWorkbook({ fresh: true });
     return { connected: true as const, role, url: status.url, data };
+  });
+
+/* ------------------------------ backups ---------------------------------- */
+
+export const listBackupsFn = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const { listBackups } = await import("./backup.server");
+    return { files: await listBackups() };
+  });
+
+export const getBackupDownloadUrlFn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((data: unknown) =>
+    z.object({ path: z.string().trim().min(10).max(200) }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    const { getBackupDownloadUrl } = await import("./backup.server");
+    return getBackupDownloadUrl(data.path);
+  });
+
+export const backupNowFn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { requireRole } = await import("./gbp.server");
+    await requireRole(context.supabase, context.userId, ["admin"]);
+    const { runDailyBackup } = await import("./backup.server");
+    const { loadWorkbook } = await import("./gbp.server");
+    // Force a backup even if today's copy exists (admin pressed the button).
+    const out = await runDailyBackup(() => loadWorkbook({ fresh: true }));
+    return out;
   });
 
 export const connectSheet = createServerFn({ method: "POST" })

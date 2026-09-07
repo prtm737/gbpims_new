@@ -19,6 +19,7 @@ import {
 import { useCallback, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
+import { BulkReminderDialog } from "@/components/bulk-reminder-dialog";
 import { ConfirmDeleteDialog, type DeleteTarget } from "@/components/confirm-delete-dialog";
 import { EditRemarkDialog } from "@/components/edit-remark-dialog";
 import { ManualPowerEntryDialog } from "@/components/manual-power-entry-dialog";
@@ -150,6 +151,7 @@ function LedgerPage() {
   const [payRent, setPayRent] = useState<RentInvoiceView | null>(null);
   const [remark, setRemark] = useState<RemarkTarget | null>(null);
   const [showAudit, setShowAudit] = useState(false);
+  const [bulkRemind, setBulkRemind] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<
     (DeleteTarget & { kind: "rent" | "electricity" }) | null
   >(null);
@@ -410,6 +412,14 @@ function LedgerPage() {
               )}
               <Button size="sm" variant="outline" className="h-10" onClick={exportCsv}>
                 <Download className="size-3.5" /> CSV
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-10"
+                onClick={() => setBulkRemind(true)}
+              >
+                <MessageCircle className="size-3.5" /> Remind all
               </Button>
               <Button
                 size="sm"
@@ -787,9 +797,46 @@ function LedgerPage() {
         </div>
       )}
 
+      {bulkRemind && (
+        <BulkReminderDialog
+          parkName={parkName}
+          onClose={() => setBulkRemind(false)}
+          rows={[
+            ...rentRows
+              .filter((r) => r.balance > 0)
+              .map((r) => ({
+                id: `rent-${r.invoiceId}`,
+                kind: "rent" as const,
+                company: r.company,
+                month: r.month,
+                amount: r.amount,
+                paid: r.paid,
+                balance: r.balance,
+                dueDate: r.dueDate,
+                phone: r.phone,
+              })),
+            ...bills
+              .filter((b) => b.balance > 0)
+              .map((b) => {
+                const client = clients.find((c) => c.clientId === b.clientId);
+                return {
+                  id: `power-${b.billId}`,
+                  kind: "electricity" as const,
+                  company: b.clientName,
+                  month: b.monthKey || b.billDate.slice(0, 7),
+                  amount: b.total,
+                  paid: b.amountPaid,
+                  balance: b.balance,
+                  dueDate: b.dueDate,
+                  phone: client?.whatsapp ?? "",
+                };
+              }),
+          ]}
+        />
+      )}
+
       <Dialog open={showAudit} onOpenChange={(o) => !o && setShowAudit(false)}>
-        <DialogContent className="max-h-[85dvh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="max-h-[85dvh] overflow-y-auto">          <DialogHeader>
             <DialogTitle>Ledger audit trail</DialogTitle>
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
