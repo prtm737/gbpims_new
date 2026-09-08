@@ -1,0 +1,19 @@
+name: Keep Render Awake
+
+# Pings https://gbpims.onrender.com every 14 min so the free instance never sleeps
+# (Render sleeps after 15 min idle — this keeps it warm). Public repo = unlimited free runs.
+on:
+  schedule:
+    - cron: "*/14 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://gbpims.onrender.com/ || echo "000")
+          echo "HTTP $code"
+          # Also hit the health endpoint to warm server functions
+          curl -s https://gbpims.onrender.com/auth -o /dev/null || true
