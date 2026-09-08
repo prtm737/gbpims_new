@@ -1,15 +1,33 @@
 # GBPIMS — Hosting
-## Live at: https://gbpims.netlify.app (primary — use this)
-## Mirror: https://app.prtam737-gbpims.workers.dev (Cloudflare — kept for redundancy, `*.workers.dev` is unreliable in some Indian networks due to HTTP3/module-preload edge bug — Netlify is the official URL)
+
+## Live at: https://gbpims.prtam737-gbpims.workers.dev (Cloudflare Workers — always-on, no sleep)
+Short URL: `https://gbpims.<subdomain>.workers.dev` (worker name `gbpims` = 6 chars). For even shorter, set `WORKER_NAME=gbp` → `https://gbp.<subdomain>.workers.dev` (3 chars).
+
+Custom tiny domain (optional): add your domain to Cloudflare and set `CLOUDFLARE_CUSTOM_DOMAIN=gbp.yourdomain.com` as a GitHub secret or env var — deploy script will bind it.
+
+Legacy: https://gbpims.netlify.app (Netlify — kept as fallback). Render retired (free tier sleeps after 15 min).
 
 ## Deploy
-cd /data/data/com.termux/files/usr/tmp/opencode/gbpims
-export NETLIFY_AUTH_TOKEN="nfp_..."
-node_modules/.bin/netlify deploy --site=d514a2a7-9a63-49a4-a306-dbe3dae7c2d7 --dir=dist --functions=.netlify/functions-internal --prod
+Push to `main` → GitHub Actions builds (`npm run build` with `cloudflare-module` preset) → `node scripts/deploy-cloudflare.mjs` deploys to Workers.
 
-## Cloudflare redeploy (mirror only):
-export CLOUDFLARE_API_TOKEN="cfat_..." CLOUDFLARE_ACCOUNT_ID="1612f4..." WORKER_NAME=app
+Required GitHub secrets:
+- `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON`
+- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
+Optional:
+- `WORKER_NAME` (default `gbpims`; use `gbp` for shortest URL)
+- `CLOUDFLARE_CUSTOM_DOMAIN` (e.g. `gbpims.example.com`)
+
+Manual deploy (Termux/local):
+```sh
+export CLOUDFLARE_API_TOKEN="..." CLOUDFLARE_ACCOUNT_ID="..."
+export WORKER_NAME=gbpims  # or gbp for shorter URL
+# VARS are read from env at deploy time; secrets from .env.deploy
+export SUPABASE_URL="https://fphchylxhcghlvfkvkfz.supabase.co"
+export SUPABASE_PUBLISHABLE_KEY="..."
+# .env.deploy must contain VARS + SUPABASE_SERVICE_ROLE_KEY + GOOGLE_SERVICE_ACCOUNT_JSON
+npm run build
 node scripts/deploy-cloudflare.mjs
+```
 
 ## Keepalive
-Supabase free projects pause after 7d inactivity — the worker's daily cron plugin (src/server-keepalive.ts) pings daily. Netlify function also keeps it warm via SSR requests.
+Supabase free projects pause after 7d inactivity — Cloudflare cron `13 3 * * *` triggers `src/server-keepalive.ts` daily.

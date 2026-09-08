@@ -1,4 +1,4 @@
-name: Deploy to Firebase (asia-south1)
+name: Deploy to Cloudflare Workers (always-on, no sleep)
 
 on:
   push:
@@ -18,24 +18,36 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund --legacy-peer-deps
 
-      - name: Build
+      - name: Build (Cloudflare Workers)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          # Client bundle reads these via import.meta.env at build time;
-          # without them authClient throws "Authentication is not configured."
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
           test -n "$VITE_SUPABASE_URL" || { echo "::error::SUPABASE_URL secret is not set"; exit 1; }
           test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" || { echo "::error::SUPABASE_PUBLISHABLE_KEY secret is not set"; exit 1; }
-          # process.env alone did not embed in CI builds; the known-good local
-          # build had these in a .env file, so materialize it before building.
           printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_PUBLISHABLE_KEY=%s\n' "$SUPABASE_URL" "$SUPABASE_PUBLISHABLE_KEY" > .env
           npm run build
-          grep -q "$SUPABASE_URL" .output/public/assets/*.js 2>/dev/null || grep -q "$SUPABASE_URL" dist/assets/*.js 2>/dev/null || { echo "::error::client bundle missing Supabase URL - auth pages would crash"; exit 1; }
+          # Verify client bundle has Supabase URL (catches missing VITE_ at build time)
+          grep -q "$SUPABASE_URL" .output/public/assets/*.js 2>/dev/null || grep -q "$SUPABASE_URL" dist/client/assets/*.js 2>/dev/null || grep -q "$SUPABASE_URL" dist/assets/*.js 2>/dev/null || { echo "::error::client bundle missing Supabase URL - auth pages would crash"; exit 1; }
+          ls -la .output/server/wrangler.json 2>/dev/null || ls -la dist/server/wrangler.json 2>/dev/null || { echo "::error::wrangler.json not found - check nitro preset is cloudflare-module"; exit 1; }
 
-      - name: Build check only (Render auto-deploys on push)
-        run: echo "Build passed — Render will auto-deploy via render.yaml (Singapore, free). No Netlify/Firebase token needed."
+      - name: Deploy to Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: ${{ secrets.WORKER_NAME || 'gbpims' }}
+          # Plain vars are read from env at deploy time via VARS in .env.deploy
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          CLOUDFLARE_CUSTOM_DOMAIN: ${{ secrets.CLOUDFLARE_CUSTOM_DOMAIN }}
+        run: |
+          # Create .env.deploy for the deploy script (VARS + secrets)
+          printf 'VARS=SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY\n' > .env.deploy
+          printf 'SUPABASE_SERVICE_ROLE_KEY=%s\n' "$SUPABASE_SERVICE_ROLE_KEY" >> .env.deploy
+          # Escape newlines in service account JSON for the file
+          printf 'GOOGLE_SERVICE_ACCOUNT_JSON=%s\n' "$GOOGLE_SERVICE_ACCOUNT_JSON" >> .env.deploy
+          node scripts/deploy-cloudflare.mjs

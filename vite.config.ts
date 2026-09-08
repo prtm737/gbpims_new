@@ -18,10 +18,16 @@ export default defineConfig({
   // plugin — hence the cast.
   nitro: {
     plugins: ["./src/server-keepalive.ts"],
-    // Netlify preset: free hosting, serves SSR via Netlify Functions, and its
-    // *.netlify.app domain is reliably reachable in regions where
-    // *.workers.dev module imports fail.
-    preset: "node-server",
+    // Cloudflare Workers: always-on, no sleep (Render free sleeps after 15 min).
+    // Lovable sandbox forces cloudflare-module + dist/server output; local/GitHub
+    // builds use the explicit preset + dirs below so scripts/deploy-cloudflare.mjs
+    // can find the bundle regardless of where it was built.
+    preset: "cloudflare-module",
+    output: {
+      dir: ".output",
+      serverDir: ".output/server",
+      publicDir: ".output/public",
+    },
     routeRules: {
       "/**": {
         headers: {
@@ -36,5 +42,5 @@ export default defineConfig({
         },
       },
     },
-  } as { preset?: string; routeRules?: unknown },
+  } as { preset?: string; output?: unknown; routeRules?: unknown },
 });

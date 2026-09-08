@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// Deploys the built Cloudflare Worker (from .output/) via the Cloudflare REST
-// API, without wrangler (which cannot run on Android/Termux).
+// Deploys the built Cloudflare Worker via the Cloudflare REST API, without
+// wrangler (which cannot run on Android/Termux).
 //
 // Required env vars:
-//   CLOUDFLARE_API_TOKEN  - token with Workers Scripts:Edit + Workers KV:Edit (for vars)
+//   CLOUDFLARE_API_TOKEN  - token with Workers Scripts:Edit + Workers KV:Edit
 //   CLOUDFLARE_ACCOUNT_ID - your account id
 // Optional:
-//   WORKER_NAME           - defaults to "gbpims"
+//   WORKER_NAME           - defaults to "gbpims" → https://gbpims.<subdomain>.workers.dev
+//                          Use a shorter name like "gbp" for an even smaller URL:
+//                          WORKER_NAME=gbp → https://gbp.<subdomain>.workers.dev
+//                          Set CLOUDFLARE_CUSTOM_DOMAIN to bind a custom domain for tiny URLs.
+//   CLOUDFLARE_CUSTOM_DOMAIN - e.g. gbpims.yourdomain.com (requires domain on Cloudflare)
 //
 // Usage: node scripts/deploy-cloudflare.mjs
 import { createHash } from "node:crypto";
@@ -14,8 +18,32 @@ import fs from "node:fs";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const SERVER_DIR = path.join(ROOT, ".output", "server");
-const PUBLIC_DIR = path.join(ROOT, ".output", "public");
+
+// Detect build output: local dev uses .output (vite.config explicit), Lovable sandbox uses dist.
+function resolveBuildDirs() {
+  const candidates = [
+    { server: path.join(ROOT, ".output", "server"), public: path.join(ROOT, ".output", "public") },
+    { server: path.join(ROOT, "dist", "server"), public: path.join(ROOT, "dist", "client") },
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c.server, "wrangler.json")) && fs.existsSync(c.public)) {
+      return c;
+    }
+  }
+  // Fallback: prefer .output if it exists, else dist
+  if (fs.existsSync(path.join(ROOT, ".output", "server"))) return candidates[0];
+  if (fs.existsSync(path.join(ROOT, "dist", "server"))) return candidates[1];
+  return candidates[0];
+}
+
+const { server: SERVER_DIR, public: PUBLIC_DIR } = resolveBuildDirs();
+console.log(`Using server dir: ${path.relative(ROOT, SERVER_DIR)}`);
+console.log(`Using public dir: ${path.relative(ROOT, PUBLIC_DIR)}`);
+
+if (!fs.existsSync(path.join(SERVER_DIR, "wrangler.json"))) {
+  console.error(`Missing wrangler.json in ${SERVER_DIR}. Did the build run? (expected preset cloudflare-module)`);
+  process.exit(1);
+}
 const WRANGLER = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, "wrangler.json"), "utf8"));
 const WORKER_NAME = process.env["WORKER_NAME"] ?? "gbpims";
 const API = "https://api.cloudflare.com/client/v4";
@@ -74,7 +102,7 @@ function buildManifest() {
     }
   }
   walk(PUBLIC_DIR);
-  if (Object.keys(manifest).length === 0) throw new Error("No assets found in .output/public");
+  if (Object.keys(manifest).length === 0) throw new Error(`No assets found in ${PUBLIC_DIR}`);
   return manifest;
 }
 
@@ -281,7 +309,7 @@ for (const [name, value] of Object.entries(secrets)) {
   console.log(`Secret set: ${name}`);
 }
 
-// 7) Enable the workers.dev subdomain route
+// 7) Enable the workers.dev subdomain route (short URL)
 const subdomain = await cf(`/accounts/${ACCOUNT}/workers/subdomain`);
 await cf(`/accounts/${ACCOUNT}/workers/scripts/${WORKER_NAME}/subdomain`, {
   method: "POST",
@@ -290,3 +318,19 @@ await cf(`/accounts/${ACCOUNT}/workers/scripts/${WORKER_NAME}/subdomain`, {
 }).catch((e) => console.warn(`subdomain enable: ${e.message}`));
 
 console.log(`\nDeployed! Live at: https://${WORKER_NAME}.${subdomain.subdomain}.workers.dev`);
+console.log(`Short URL: https://${WORKER_NAME}.${subdomain.subdomain}.workers.dev (set WORKER_NAME=gbp for even shorter)`);
+
+// Optional: bind custom domain for tiny URL (e.g. gbpims.yourdomain.com)
+const customDomain = process.env["CLOUDFLARE_CUSTOM_DOMAIN"];
+if (customDomain) {
+  try {
+    await cf(`/accounts/${ACCOUNT}/workers/domains`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: customDomain, service: WORKER_NAME }),
+    });
+    console.log(`Custom domain bound: https://${customDomain}`);
+  } catch (e) {
+    console.warn(`Custom domain bind failed for ${customDomain}: ${e.message}`);
+  }
+}

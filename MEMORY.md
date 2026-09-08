@@ -13,12 +13,11 @@ push, no rebase/squash of pushed commits).
 
 ## Architecture
 - Stack: React 19 + TanStack Start (SSR) + TanStack Router (file-based) +
-  Vite 8 + Tailwind 4 + Nitro (`netlify` preset). Bun/termux local dev.
-- Live URL: https://gbpims.netlify.app (primary). Cloudflare Workers mirror:
-  https://app.prtam737-gbpims.workers.dev (`scripts/deploy-cloudflare.mjs`).
+  Vite 8 + Tailwind 4 + Nitro (`cloudflare-module` preset, always-on). Bun/termux local dev.
+- Live URL: https://gbpims.prtam737-gbpims.workers.dev (Cloudflare Workers, short URL via `WORKER_NAME=gbpims`; set `WORKER_NAME=gbp` for 3-char URL or `CLOUDFLARE_CUSTOM_DOMAIN` for tiny custom domain). Legacy: https://gbpims.netlify.app (fallback). Render retired — free tier slept after 15 min idle, cron keep-alive unreliable.
 - CI/CD: `.github/workflows/deploy.yml` — push to `main` → npm install
-  (`--legacy-peer-deps`, vite 8/tailwind peer conflict) → build →
-  `netlify deploy --prod` (site `d514a2a7-9a63-49a4-a306-dbe3dae7c2d7`).
+  (`--legacy-peer-deps`) → `npm run build` (cloudflare-module, bakes `VITE_*`) →
+  `node scripts/deploy-cloudflare.mjs` (requires `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`; optional `WORKER_NAME`, `CLOUDFLARE_CUSTOM_DOMAIN`). Script auto-detects `.output/` (local) vs `dist/` (Lovable sandbox).
 - Routes: `/` landing, `/auth` sign-in, `/reset-password`,
   `/_authenticated/{dashboard,labs,incubatees,leases,rent,billing,ledger,reports,settings}`
   (guard in `src/routes/_authenticated/route.tsx`, `ssr:false`, redirects via
@@ -292,3 +291,11 @@ push, no rebase/squash of pushed commits).
   `--legacy-peer-deps` (vite 8 + tailwind peer conflict); added missing
   `@netlify/functions` dep for the keepalive function.
 - Initial commit of the whole project.
+
+### 2026-09-08 — Migrated to Cloudflare Workers, retired Render, short URL
+- Render free sleeps after 15 min + cron unreliable → retired `render.yaml` + `apphosting.yaml`; `vite.config.ts` nitro preset `node-server` → `cloudflare-module` (explicit output `.output/server` + `.output/public`; Lovable sandbox still forces `dist/server`+`dist/client` — both supported).
+- `scripts/deploy-cloudflare.mjs`: auto-detects `.output/` vs `dist/` build dirs, defaults `WORKER_NAME=gbpims` → `https://gbpims.<subdomain>.workers.dev` (short; `WORKER_NAME=gbp` → `https://gbp.<subdomain>.workers.dev` for 3-char tiny URL), optional `CLOUDFLARE_CUSTOM_DOMAIN` binding for custom tiny domain.
+- `.github/workflows/deploy.yml` renamed to "Deploy to Cloudflare Workers (always-on, no sleep)": build step verifies Supabase URL + wrangler.json, then deploys via `node scripts/deploy-cloudflare.mjs` using `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` secrets (optional `WORKER_NAME`, `CLOUDFLARE_CUSTOM_DOMAIN`).
+- `HOSTING.md` now documents Cloudflare as primary (short URL guidance + manual deploy).
+- `vite.config.ts:14` + deploy script + workflow are the three places that must agree on preset/output.
+- Gotcha: set `CLOUDFLARE_API_TOKEN` (Workers Scripts:Edit) + `CLOUDFLARE_ACCOUNT_ID` in GitHub Secrets or Cloudflare deploy does nothing; after first deploy verify `https://<WORKER_NAME>.<subdomain>.workers.dev` loads (old `gbpims.onrender.com` will 404).
