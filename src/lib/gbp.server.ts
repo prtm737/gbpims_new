@@ -276,6 +276,78 @@ export async function logAudit(entry: AuditEntry): Promise<void> {
   }
 }
 
+/**
+ * Backfill the AuditLog from the sheet itself: every existing ledger/rent/
+ * payment row that has no audit entry gets one ("history import"), so the
+ * entry history is complete and missing-row checks have a timeline of when
+ * data was first written. Caps per run to keep writes bounded.
+ */
+export async function backfillAudit(): Promise<{ added: number; skipped: number }> {
+  const id = await requireSpreadsheetId();
+  const wb = await readWorkbook(id, { fresh: true });
+  const existing = new Set(
+    (wb.audit ?? []).map((r) => `${String(r["entity"] ?? "").trim()}:${String(r["entity_id"] ?? "").trim()}`),
+  );
+  const rows: Row[] = [];
+  const add = (entity: AuditEntry["entity"], entityId: string, entry: Omit<AuditEntry, "entity" | "entity_id">) => {
+    const key = `${entity}:${String(entityId).trim()}`;
+    if (key.endsWith(":") || existing.has(key)) return;
+    existing.add(key);
+    rows.push({
+      audit_id: newId("AUD"),
+      timestamp: new Date().toISOString(),
+      actor: entry.actor,
+      action: entry.action,
+      entity,
+      entity_id: entityId,
+      entity_name: entry.entity_name ?? "",
+      month: entry.month ?? "",
+      amount: entry.amount === undefined ? "" : String(entry.amount),
+      details: entry.details ?? "",
+    });
+  };
+  for (const b of wb.ledger ?? []) {
+    const billId = String(b["bill_id"] ?? "").trim();
+    if (billId === "") continue;
+    add("electricity", billId, {
+      actor: String(b["generated_by"] ?? "").trim() || "history import",
+      action: "electricity bill created",
+      entity_name: String(b["client_name"] ?? "").trim(),
+      month: String(b["bill_date"] ?? "").trim().slice(0, 7),
+      amount: String(b["total_amount"] ?? "").trim(),
+      details: `${String(b["total_units"] ?? "").trim()} units · ${String(b["period_from"] ?? "").trim()} → ${String(b["period_to"] ?? "").trim()}`,
+    });
+  }
+  for (const r of wb.rent ?? []) {
+    const invoiceId = String(r["invoice_id"] ?? "").trim();
+    if (invoiceId === "") continue;
+    add("rent", invoiceId, {
+      actor: String(r["generated_by"] ?? "").trim() || "history import",
+      action: "rent invoice created",
+      entity_name: String(r["company_name"] ?? "").trim(),
+      month: String(r["month"] ?? "").trim(),
+      amount: String(r["amount"] ?? "").trim(),
+      details: String(r["invoice_no"] ?? "").trim(),
+    });
+  }
+  for (const p of wb.payments ?? []) {
+    const pid = String(p["payment_id"] ?? "").trim();
+    if (pid === "") continue;
+    add("rent", pid, {
+      actor: String(p["recorded_by"] ?? "").trim() || "history import",
+      action: "payment recorded",
+      entity_name: String(p["incubatee_id"] ?? p["ref_id"] ?? "").trim(),
+      month: String(p["date"] ?? "").trim().slice(0, 7),
+      amount: String(p["amount"] ?? "").trim(),
+      details: `${String(p["type"] ?? "").trim()} · ${String(p["mode"] ?? "").trim()} ${String(p["reference"] ?? "").trim()}`.trim(),
+    });
+  }
+  if (rows.length === 0) return { added: 0, skipped: 0 };
+  const capped = rows.slice(0, 800);
+  await appendRows(id, "audit", capped);
+  return { added: capped.length, skipped: rows.length - capped.length };
+}
+
 /** Update only the remark of a ledger entry (rent invoice or electricity bill). */
 export async function updateLedgerRemarks(input: {
   kind: "rent" | "electricity";
@@ -548,13 +620,37 @@ export async function saveRentInvoice(input: RentInvoiceInput, canEdit: boolean)
 
   const updated = await updateRowById(id, "rent", invoiceId, row);
   if (!updated) await appendRows(id, "rent", [row]);
+  await logAudit({
+    actor: input.generated_by,
+    action: existing ? "rent invoice updated" : "rent invoice created",
+    entity: "rent",
+    entity_id: invoiceId,
+    entity_name: inc["company_name"] ?? "",
+    month: input.month,
+    amount: bill.total,
+    details: `${invoiceNo} · gross ${bill.gross} · discount ${bill.discount} · total ${bill.total}`,
+  });
   return { invoiceId, invoiceNo, total: bill.total };
 }
 
 export async function deleteRentInvoice(invoiceId: string) {
   const id = await requireSpreadsheetId();
+  const wb = await readWorkbook(id, { fresh: true });
+  const invoice = wb.rent.find((r) => (r["invoice_id"] ?? "") === invoiceId);
   const ok = await deleteRowById(id, "rent", invoiceId);
   if (!ok) throw new Error("Invoice not found.");
+  if (invoice) {
+    await logAudit({
+      actor: "system",
+      action: "rent invoice deleted",
+      entity: "rent",
+      entity_id: invoiceId,
+      entity_name: invoice["company_name"] ?? "",
+      month: invoice["month"] ?? "",
+      amount: num(invoice["amount"]),
+      details: `Deleted from the rent ledger (was ${invoice["invoice_no"] || "unnumbered"} · ₹${invoice["amount"] || "?"} for ${invoice["month"] || "?"})`,
+    });
+  }
   return { ok: true };
 }
 
@@ -926,11 +1022,28 @@ export async function savePowerClient(input: PowerClientInput) {
 
 export async function deletePowerClient(clientId: string) {
   const id = await requireSpreadsheetId();
-  const wb = await readWorkbook(id);
-  for (const bill of wb.ledger.filter((b) => b["client_id"] === clientId)) {
-    await deleteRowById(id, "ledger", bill["bill_id"] ?? "");
+  const wb = await readWorkbook(id, { fresh: true });
+  const client = wb.clients.find((c) => c["client_id"] === clientId);
+  const billCount = wb.ledger.filter((b) => (b["client_id"] ?? "") === clientId).length;
+  if (billCount > 0) {
+    // Bills are financial records: they are NEVER bulk-deleted with a client.
+    // They stay in the ledger (shown as orphaned in the UI) until each bill is
+    // deleted individually on purpose.
+    throw new Error(
+      `${client?.["client_name"] || clientId} still has ${billCount} electricity bill(s). Bills are financial records and are kept — delete the individual bills first if you really need to.`,
+    );
   }
   await deleteRowById(id, "clients", clientId);
+  if (client) {
+    await logAudit({
+      actor: "system",
+      action: "billing client deleted",
+      entity: "electricity",
+      entity_id: clientId,
+      entity_name: client["client_name"] ?? "",
+      details: "Client removed from PowerClients (no bills existed)",
+    });
+  }
   return { ok: true };
 }
 
@@ -1276,6 +1389,16 @@ export async function savePowerBill(input: PowerBillInput) {
   } else {
     await appendRows(id, "ledger", [row]);
   }
+  await logAudit({
+    actor: input.generated_by,
+    action: existing ? "electricity bill updated" : "electricity bill created",
+    entity: "electricity",
+    entity_id: billId,
+    entity_name: client["client_name"] ?? "",
+    month: (input.bill_date || "").slice(0, 7),
+    amount: computed.total,
+    details: `${computed.totalUnits} units · period ${input.period_from} → ${input.period_to} · arrears ${computed.arrears}`,
+  });
   return { billId, total: computed.total };
 }
 
@@ -1343,6 +1466,16 @@ export async function markPowerBillPaid(input: {
   if ((input.remarks ?? "").trim() !== "") patch["remarks"] = (input.remarks ?? "").trim();
   const ok = await updateRowById(id, "ledger", input.bill_id, patch);
   if (!ok) throw new Error("Bill not found.");
+  await logAudit({
+    actor: input.recorded_by ?? "system",
+    action: balance <= 0 ? "electricity bill paid" : "electricity bill part-paid",
+    entity: "electricity",
+    entity_id: input.bill_id,
+    entity_name: bill["client_name"] ?? "",
+    month: (bill["bill_date"] ?? "").slice(0, 7),
+    amount: received,
+    details: `${input.payment_mode}${input.txn_ref ? ` · ${input.txn_ref}` : ""} · now ${paidTotal}/${total} · balance ${balance}`,
+  });
   return { ok: true, received, balance, paymentId };
 }
 
@@ -1450,12 +1583,36 @@ export async function saveManualPowerEntry(input: {
 
   if (existing) await updateRowById(id, "ledger", billId, row);
   else await appendRows(id, "ledger", [row]);
+  await logAudit({
+    actor: input.generated_by,
+    action: existing ? "manual electricity entry updated" : "manual electricity entry created",
+    entity: "electricity",
+    entity_id: billId,
+    entity_name: client["client_name"] ?? "",
+    month: (input.bill_date || "").slice(0, 7),
+    amount: total,
+    details: (input.remarks ?? "").trim() || "Manually entered bill",
+  });
   return { billId, total };
 }
 
 export async function deletePowerBill(billId: string) {
   const id = await requireSpreadsheetId();
+  const wb = await readWorkbook(id, { fresh: true });
+  const bill = wb.ledger.find((b) => (b["bill_id"] ?? "") === billId);
   await deleteRowById(id, "ledger", billId);
+  if (bill) {
+    await logAudit({
+      actor: "system",
+      action: "electricity bill deleted",
+      entity: "electricity",
+      entity_id: billId,
+      entity_name: bill["client_name"] ?? "",
+      month: (bill["bill_date"] ?? "").slice(0, 7),
+      amount: num(bill["total_amount"]),
+      details: `Deleted from the electricity ledger (was ₹${bill["total_amount"] || "?"} dated ${bill["bill_date"] || "?"})`,
+    });
+  }
   return { ok: true };
 }
 

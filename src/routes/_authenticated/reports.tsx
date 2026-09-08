@@ -18,8 +18,13 @@ import { AppShell } from "@/components/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { useWorkbookState } from "@/components/workbook-state";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { backfillAuditFn } from "@/lib/gbp.functions";
 import { downloadCsv, duesByKind, monthlySplitSeries, summary } from "@/lib/derive";
 import { inr, monthLabel, num } from "@/lib/sheets-schema";
+import { useServerFn } from "@tanstack/react-start";
+import { useState } from "react";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/reports")({
   head: () => ({
@@ -237,10 +242,13 @@ function ReportsPage() {
               )}
             </ul>
           </section>
-          <section className="rounded-lg border border-border bg-card p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="font-display text-sm font-semibold">Security deposits held</h2>
+            <section className="rounded-lg border border-border bg-card p-4">
+              <EntryHistoryCard />
+            </section>
+            <section className="rounded-lg border border-border bg-card p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-sm font-semibold">Security deposits held</h2>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Deposits of active tenants. Exited tenants show separately for refund tracking.
                 </p>
@@ -308,7 +316,91 @@ function ReportsPage() {
             </ul>
           </section>
         </div>
+        <EntryHistoryCard />
       </div>
     );
   }
+}
+
+function EntryHistoryCard() {
+  const { wb } = useWorkbookState();
+  const backfillFn = useServerFn(backfillAuditFn);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const rows = (wb?.audit ?? [])
+    .slice()
+    .sort((a, b) => String(b["timestamp"] ?? "").localeCompare(String(a["timestamp"] ?? "")));
+  const filtered = rows.filter((r) => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return true;
+    return Object.values(r).some((v) => String(v ?? "").toLowerCase().includes(needle));
+  });
+  const shown = filtered.slice(0, 200);
+  async function backfill() {
+    setBusy(true);
+    try {
+      const out = (await backfillFn({ data: undefined })) as { added: number; skipped: number };
+      if (out.added > 0) toast.success(`Added ${out.added} history entries${out.skipped ? ` (${out.skipped} more pending — run again)` : ""}`);
+      else toast.info("Entry history is already complete");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-display text-sm font-semibold">Entry history — when what was entered</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Every bill, invoice, payment, tenant/client change and restore is logged here with
+            time, actor and id — the timeline that proves nothing went missing.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => void backfill()}>
+          {busy ? "Building…" : "Backfill history"}
+        </Button>
+      </div>
+      <Input className="mt-3 h-8" placeholder="Filter by id, name, actor, action…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <p className="mt-2 text-xs text-muted-foreground">
+        Showing {shown.length} of {filtered.length} (total {rows.length}) — newest first
+      </p>
+      <div className="mt-2 max-h-80 overflow-auto rounded-md border border-border">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-muted">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-semibold">Time</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Actor</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Action</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Entity</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Name / id</th>
+              <th className="px-2 py-1.5 text-right font-semibold">Amount</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Details</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {shown.map((r) => (
+              <tr key={String(r["audit_id"] ?? Math.random())} className="hover:bg-muted/40">
+                <td className="whitespace-nowrap px-2 py-1.5">{String(r["timestamp"] ?? "").slice(0, 16).replace("T", " ")}</td>
+                <td className="whitespace-nowrap px-2 py-1.5">{String(r["actor"] ?? "")}</td>
+                <td className="whitespace-nowrap px-2 py-1.5">{String(r["action"] ?? "")}</td>
+                <td className="whitespace-nowrap px-2 py-1.5">{String(r["entity"] ?? "")}</td>
+                <td className="max-w-[14rem] truncate px-2 py-1.5">{String(r["entity_name"] ?? r["entity_id"] ?? "")}</td>
+                <td className="whitespace-nowrap px-2 py-1.5 text-right">{r["amount"] ? `₹${String(r["amount"])}` : "—"}</td>
+                <td className="max-w-[18rem] truncate px-2 py-1.5 text-muted-foreground">{String(r["details"] ?? "")}</td>
+              </tr>
+            ))}
+            {shown.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-2 py-8 text-center text-muted-foreground">
+                  No entries yet — generate a bill or invoice, or press Backfill history to seed this log from existing rows.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }

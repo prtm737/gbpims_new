@@ -876,7 +876,22 @@ async function ensureDashboard(
  * column order so they line up with the new, human-readable header order.
  * Runs inside ensureWorkbook, before headers are rewritten.
  */
-async function migrateLedgerColumnOrder(spreadsheetId: string): Promise<void> {
+async function migrateLedgerColumnOrder(
+  spreadsheetId: string,
+  options: { auto?: boolean } = {},
+): Promise<void> {
+  // SAFETY KILL-SWITCH. This routine rewrites the ENTIRE ledger tab in place —
+  // when it raced a concurrent write, freshly generated bills were wiped from
+  // the sheet (the Sep 3–8 "bills vanish" incident). It has already done its
+  // one-time job (old column order → new), so it must NEVER run automatically
+  // again. Only an explicit admin action (Settings → "Format workbook") may
+  // trigger it, and even then only after a backup.
+  if (options.auto) {
+    console.warn(
+      "[sheets] ledger column migration skipped (auto-runs are disabled; use Format workbook)",
+    );
+    return;
+  }
   try {
     const OLD = [
     "bill_id",
@@ -1057,7 +1072,7 @@ export async function ensureWorkbook(
       /* PowerLedger missing too — the tab is created fresh below */
     }
   }
-  await migrateLedgerColumnOrder(spreadsheetId);
+  await migrateLedgerColumnOrder(spreadsheetId, { auto: true });
 
   const existing = new Set(
     (meta.sheets ?? []).map((s) => s.properties?.title ?? ""),
@@ -1294,6 +1309,12 @@ export async function appendRows(
     },
   );
   invalidateWorkbookCache(spreadsheetId);
+  // WAL: record the appended rows (after-images) so nothing lands in the
+  // sheet without a durable copy.
+  const { walWrite } = await import("./wal.server");
+  for (const row of rows) {
+    await walWrite(tab, "write", String(row[HEADERS[tab][0]!] ?? ""), null, row);
+  }
   revalidateAfterWrite(spreadsheetId);
 }
 
@@ -1352,6 +1373,8 @@ export async function updateRowById(
     },
   );
   invalidateWorkbookCache(spreadsheetId);
+  const { walWrite } = await import("./wal.server");
+  await walWrite(tab, "write", idValue, current, merged);
   revalidateAfterWrite(spreadsheetId);
   return true;
 }
@@ -1372,12 +1395,23 @@ export async function deleteRowById(
     if (i > 0 && String(r[0] ?? "") === idValue) indices.push(i);
   });
   if (indices.length === 0) return false;
-  const requests = indices.map((i) => ({
-    range: `${TABS[tab]}!A${i + 1}:${colLetter(HEADERS[tab].length - 1)}${i + 1}:clear`,
-  }));
+  // wal before-images first: nothing gets cleared without a trace.
+  {
+    const { walWrite } = await import("./wal.server");
+    for (const i of indices) {
+      const row: Row = {};
+      HEADERS[tab].forEach((h, c) => {
+        row[h] = String(values[i]?.[c] ?? "");
+      });
+      await walWrite(tab, "delete", idValue, row, null);
+    }
+  }
+  const ranges = indices.map(
+    (i) => `${TABS[tab]}!A${i + 1}:${colLetter(HEADERS[tab].length - 1)}${i + 1}`,
+  );
   await sheetsApi(`/spreadsheets/${spreadsheetId}/values:batchClear`, {
     method: "POST",
-    body: JSON.stringify({ ranges: requests.map((r) => r.range) }),
+    body: JSON.stringify({ ranges }),
   });
   invalidateWorkbookCache(spreadsheetId);
   revalidateAfterWrite(spreadsheetId);

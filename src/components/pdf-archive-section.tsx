@@ -1,11 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Download, FileText, Receipt, Zap } from "lucide-react";
+import { Download, FileText, HardDriveUpload, Receipt, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { getPdfDownloadUrlFn, listPdfArchiveFn } from "@/lib/gbp.functions";
 import { PDF_ARCHIVE_EVENT, type ArchivedPdfLike } from "@/lib/pdf-archive-shared";
+import { useWorkbookState } from "@/components/workbook-state";
+import { powerBills, type PowerBill } from "@/lib/power";
+import { rentInvoiceViews, type RentInvoiceView } from "@/lib/rent-invoices";
 
 const KIND_META: Record<
   string,
@@ -52,6 +56,8 @@ export function PdfArchiveSection() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const { wb } = useWorkbookState();
+  const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
     const refresh = () => queryClient.invalidateQueries({ queryKey: ["pdf-archive"] });
@@ -69,6 +75,57 @@ export function PdfArchiveSection() {
     }
     return [...byMonth.entries()].sort((a, b) => b[0].localeCompare(a[0]));
   }, [files.data]);
+
+  // Bills/invoices whose PDFs have not yet been stored — regeneratable from the sheet.
+  const missing = useMemo(() => {
+    if (!wb) return { electricity: 0, rent: 0, total: 0, elec: [] as PowerBill[], rents: [] as RentInvoiceView[] };
+    const archived = new Set((files.data?.files ?? []).map((f) => f.name));
+    const hasArchived = (refId: string) => {
+      const safe = refId.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80);
+      return [...archived].some((n) => n === `${safe}.pdf` || n.startsWith(`${safe}_`));
+    };
+    const elec = powerBills(wb).filter((b) => !hasArchived(b.billId));
+    const rents = rentInvoiceViews(wb).filter((r) => !hasArchived(r.invoiceNo || r.invoiceId));
+    return { electricity: elec.length, rent: rents.length, total: elec.length + rents.length, elec, rents };
+  }, [wb, files.data]);
+
+  async function restoreMissing() {
+    if (!wb || missing.total === 0) return;
+    setRestoring(true);
+    let ok = 0;
+    let fail = 0;
+    try {
+      const { defaultPowerBillOptions, powerBillPdfBase64 } = await import("@/lib/pdf");
+      const { rentInvoicePdfData } = await import("@/lib/rent-invoices");
+      const { rentInvoicePdfBase64 } = await import("@/lib/pdf-rent");
+      const { archiveMonth, archivePdfQuiet } = await import("@/lib/pdf-archive-client");
+      for (const bill of missing.elec) {
+        try {
+          const opts = defaultPowerBillOptions(wb, bill);
+          const month = archiveMonth(bill.monthKey, bill.billDate.slice(0, 7));
+          if (!month) { fail += 1; continue; }
+          const pdf_base64 = await powerBillPdfBase64(bill, opts);
+          await archivePdfQuiet({ kind: "electricity", month, ref_id: bill.billId, label: bill.clientName, pdf_base64 });
+          ok += 1;
+        } catch { fail += 1; }
+      }
+      for (const inv of missing.rents) {
+        try {
+          const data = rentInvoicePdfData(wb, inv);
+          const month = archiveMonth(inv.month, (inv.invoiceDate || "").slice(0, 7));
+          if (!month) { fail += 1; continue; }
+          const pdf_base64 = await rentInvoicePdfBase64(data);
+          await archivePdfQuiet({ kind: "rent", month, ref_id: inv.invoiceNo || inv.invoiceId, label: data.party, pdf_base64 });
+          ok += 1;
+        } catch { fail += 1; }
+      }
+      if (ok > 0) toast.success(`Stored ${ok} missing PDF(s)`);
+      if (fail > 0) toast.warning(`${fail} PDF(s) could not be stored — check console`);
+      await files.refetch();
+    } finally {
+      setRestoring(false);
+    }
+  }
 
   async function download(path: string) {
     setBusy(path);
@@ -93,14 +150,22 @@ export function PdfArchiveSection() {
             re-download any time.
           </p>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={files.isFetching}
-          onClick={() => files.refetch()}
-        >
-          {files.isFetching ? "Loading…" : "Refresh"}
-        </Button>
+        <div className="flex gap-2">
+          {missing.total > 0 && (
+            <Button size="sm" variant="default" disabled={restoring || files.isFetching} onClick={() => void restoreMissing()}>
+              <HardDriveUpload className="size-3.5" />
+              {restoring ? "Storing…" : `Store ${missing.total} missing PDF(s)`}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={files.isFetching || restoring}
+            onClick={() => files.refetch()}
+          >
+            {files.isFetching ? "Loading…" : "Refresh"}
+          </Button>
+        </div>
       </div>
 
       {months.length === 0 ? (

@@ -1,8 +1,9 @@
 // Client-side PDF generation for rent/electricity bills and payment receipts.
 import { BRAND, getLogoDataUrl, getUpiQrDataUrl } from "./brand";
 import { archiveMonth, archivePdfQuiet } from "./pdf-archive-client";
+import { powerClients } from "./power";
 import type { PowerBill } from "./power";
-import { inr, monthLabel } from "./sheets-schema";
+import { billTerms, inr, monthLabel, parkProfile } from "./sheets-schema";
 
 export type PdfDoc = {
   kind: "invoice" | "receipt";
@@ -198,6 +199,23 @@ export async function emailPdf(doc: PdfDoc, to: string, body: string): Promise<v
 }
 
 /* --------------------- electricity invoice (billing app) ------------------ */
+
+/** Build the PDF option bag for a bill using whatever is in the workbook. */
+export function defaultPowerBillOptions(
+  wb: { settings: Record<string, string>; clients: Record<string, string>[] },
+  bill: PowerBill,
+): PowerBillPdfOptions {
+  const clients = powerClients(wb as never);
+  const match = clients.find(
+    (c) => c.clientId === bill.clientId || c.clientIds.includes(bill.clientId),
+  );
+  return {
+    ...parkProfile(wb.settings),
+    clientAddress: match?.address ?? "",
+    clientPhone: match?.whatsapp ?? "",
+    terms: billTerms(wb.settings),
+  };
+}
 
 export type PowerBillPdfOptions = {
   parkName: string;

@@ -128,6 +128,15 @@ export const restoreMissingRowsFn = createServerFn({ method: "POST" })
     return restoreMissingRows(data.ids);
   });
 
+export const backfillAuditFn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { requireRole } = await import("./gbp.server");
+    await requireRole(context.supabase, context.userId, ["admin"]);
+    const { backfillAudit } = await import("./gbp.server");
+    return backfillAudit();
+  });
+
 export const connectSheet = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((data: { link: string }) =>
@@ -145,6 +154,10 @@ export const formatWorkbookFn = createServerFn({ method: "POST" })
     const { requireRole, requireSpreadsheetId } = await import("./gbp.server");
     await requireRole(context.supabase, context.userId, ["admin"]);
     const spreadsheetId = await requireSpreadsheetId();
+    // Safety net: snapshot the workbook BEFORE any structural rewrite.
+    const { runDailyBackup } = await import("./backup.server");
+    const { loadWorkbook } = await import("./gbp.server");
+    await runDailyBackup(() => loadWorkbook({ fresh: true }));
     // ensureWorkbook = rename/migrate + tab structure + formatting + dashboard
     const { ensureWorkbook } = await import("./sheets.server");
     await ensureWorkbook(spreadsheetId);

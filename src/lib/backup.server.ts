@@ -214,12 +214,17 @@ export async function scanMissingRows(): Promise<RecoveryReport> {
 
     const liveIds = new Map<keyof typeof TABS, Set<string>>();
     for (const tab of tabKeys) {
+      const idField = ROW_ID_FIELD[tab];
       const rows = live[tab] as Row[] | undefined;
+      // `settings` is a key/value object, not a row list — skip it (and any
+      // other tab without a natural id) or .map blows up.
+      if (!idField || !Array.isArray(rows)) {
+        liveIds.set(tab, new Set());
+        continue;
+      }
       liveIds.set(
         tab,
-        new Set(
-          (rows ?? []).map((r) => rowId(tab, r)).filter((v) => v !== ""),
-        ),
+        new Set(rows.map((r) => rowId(tab, r)).filter((v) => v !== "")),
       );
     }
 
@@ -242,6 +247,7 @@ export async function scanMissingRows(): Promise<RecoveryReport> {
           if (!idField) continue; // settings/audit have no natural key
           const target = missingIds.get(tab)!;
           for (const row of wb[tab] ?? []) {
+            if (!row || typeof row !== "object") continue;
             const id = String(row[idField] ?? "").trim();
             if (id === "") continue;
             if (liveIds.get(tab)!.has(id)) continue;
@@ -264,6 +270,33 @@ export async function scanMissingRows(): Promise<RecoveryReport> {
           backupDay: day,
         });
       }
+    }
+
+    // Same-day WAL fallback: backups are once/day — rows written and then
+    // vanished the same day only exist in the wal/<date>/… files.
+    try {
+      const { listWal } = await import("./wal.server");
+      const walEntries = await listWal(3);
+      for (const entry of walEntries) {
+        if (entry.op !== "write" || !entry.after) continue;
+        const tab = entry.tab as keyof typeof TABS;
+        const idField = ROW_ID_FIELD[tab];
+        if (!idField) continue;
+        const id = String((entry.after as Record<string, string>)[idField] ?? "").trim();
+        if (id === "") continue;
+        const target = missingIds.get(tab);
+        if (!target || target.has(id) || liveIds.get(tab)!.has(id)) continue;
+        // Only add if not already covered by a backup copy.
+        missingIds.get(tab)!.set(id, { day: `wal ${entry.at.slice(0, 10)}`, row: entry.after as Record<string, string> });
+        missing.push({
+          tab,
+          id,
+          summary: summarizeRow(tab, entry.after as Record<string, string>),
+          backupDay: `wal ${entry.at.slice(0, 10)}`,
+        });
+      }
+    } catch {
+      /* wal scan is best effort */
     }
 
     return { backupDays: days, scannedBackups, missing };
@@ -335,6 +368,47 @@ export async function restoreMissingRows(
         }
         restored += toAdd.length;
       }
+    }
+  }
+
+  // WAL fallback for any id still pending: the after-image is the row's last
+  // known good copy even if it vanished before tonight's backup.
+  if (pending.size > 0) {
+    try {
+      const { listWal } = await import("./wal.server");
+      const { readWorkbook: freshRead, appendRows: walAppend } = await import("./sheets.server");
+      const walEntries = await listWal(3);
+      const byKey = new Map<string, Record<string, string>>();
+      for (const e of walEntries) {
+        if (e.op !== "write" || !e.after) continue;
+        const tab = e.tab as keyof typeof TABS;
+        const idField = ROW_ID_FIELD[tab];
+        if (!idField) continue;
+        const id = String((e.after as Record<string, string>)[idField] ?? "").trim();
+        const key = `${String(tab)}:${id}`;
+        if (!pending.has(key)) continue;
+        if (!byKey.has(key)) byKey.set(key, e.after as Record<string, string>);
+      }
+      for (const [key, row] of byKey) {
+        const [tabStr] = key.split(":");
+        const tab = tabStr as keyof typeof TABS;
+        const liveNow = await freshRead(spreadsheetId, { fresh: true });
+        const existing2 = new Set(
+          ((liveNow[tab] as Row[] | undefined) ?? [])
+            .map((r) => rowId(tab, r))
+            .filter((v) => v !== ""),
+        );
+        const id = String(row[ROW_ID_FIELD[tab]! ?? ""] ?? "").trim();
+        if (existing2.has(id)) {
+          pending.delete(key);
+          continue;
+        }
+        await walAppend(spreadsheetId, tab, [row]);
+        pending.delete(key);
+        restored += 1;
+      }
+    } catch {
+      /* wal restore is best effort */
     }
   }
 

@@ -343,7 +343,7 @@ type RecoveryReport = {
   backupDays: string[];
   scannedBackups: number;
   missing: { tab: string; id: string; summary: string; backupDay: string }[];
-  error?: string;
+  error?: string | undefined;
 };
 
 /** Compares the live sheet with the daily backups and restores anything lost. */
@@ -361,8 +361,14 @@ function RecoveryCard() {
     setScanError("");
     try {
       const out = (await scanFn()) as RecoveryReport;
-      setReport(out);
-      if (out.error) setScanError(out.error);
+      const safe: RecoveryReport = {
+        backupDays: Array.isArray(out?.backupDays) ? out.backupDays : [],
+        scannedBackups: Number(out?.scannedBackups ?? 0),
+        missing: Array.isArray(out?.missing) ? out.missing : [],
+        error: out?.error,
+      };
+      setReport(safe);
+      if (safe.error) setScanError(safe.error);
     } catch (err) {
       setScanError((err as Error).message);
     } finally {

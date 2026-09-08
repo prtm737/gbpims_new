@@ -1023,7 +1023,11 @@ function BillingPage() {
                                 variant="ghost"
                                 aria-label={`Delete ${c.name}`}
                                 onClick={() => {
-                                  if (confirm(`Delete ${c.name} and all its bills?`)) {
+                                  if (
+                                    confirm(
+                                      `Remove ${c.name} from billing setup? Their existing bills are never deleted — they stay in the ledger.`,
+                                    )
+                                  ) {
                                     removeClient.mutate({ data: { client_id: c.clientId } });
                                   }
                                 }}
