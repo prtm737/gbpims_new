@@ -14,7 +14,7 @@ push, no rebase/squash of pushed commits).
 ## Architecture
 - Stack: React 19 + TanStack Start (SSR) + TanStack Router (file-based) +
   Vite 8 + Tailwind 4 + Nitro (`cloudflare-module` preset, always-on). Bun/termux local dev.
-- Live URL: https://gbpims.gbpims.workers.dev (Cloudflare Workers, short URL — subdomain `gbpims`, no `prtm737`). Legacy: https://gbpims.netlify.app (fallback). Render retired — free tier slept after 15 min idle, cron keep-alive unreliable.
+- Live URL: https://gbp.gbpims.workers.dev (Cloudflare Workers, short URL — subdomain `gbpims` + worker `gbp` = 16 chars, no `prtm737`; also `https://gbpims.gbpims.workers.dev`). Legacy: https://gbpims.netlify.app (fallback). Render retired — free tier slept after 15 min idle, cron keep-alive unreliable.
 - CI/CD: `.github/workflows/deploy.yml` — push to `main` → npm install
   (`--legacy-peer-deps`) → `npm run build` (cloudflare-module, bakes `VITE_*`) →
   `node scripts/deploy-cloudflare.mjs` (requires `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`; optional `WORKER_NAME`, `CLOUDFLARE_CUSTOM_DOMAIN`). Script auto-detects `.output/` (local) vs `dist/` (Lovable sandbox).
