@@ -649,6 +649,24 @@ export function nextBillNumber(existing: string[], year = new Date().getFullYear
   return `${prefix}${String(max + 1).padStart(4, "0")}`;
 }
 
+/** Next number for the manual slash serial you use: GBP/26-27/NN (e.g. /43 → /44). */
+export function nextManualBillNumber(existing: string[]): string | null {
+  const slashIds = existing.filter((id) => id.includes("/"));
+  if (slashIds.length === 0) return null;
+  const nums = slashIds
+    .map((id) => {
+      const last = id.split("/").pop() ?? "";
+      return Number(last) || 0;
+    })
+    .filter((n) => n > 0);
+  if (nums.length === 0) return null;
+  const max = Math.max(...nums);
+  const sample = slashIds.find((id) => id.includes("/")) ?? "GBP/26-27/01";
+  const prefix = sample.slice(0, sample.lastIndexOf("/") + 1);
+  const pad = String(max + 1).padStart(2, "0");
+  return `${prefix}${pad}`;
+}
+
 export function inr2(value: number, symbol = "₹"): string {
   return `${symbol}${value.toLocaleString("en-IN", {
     minimumFractionDigits: 2,

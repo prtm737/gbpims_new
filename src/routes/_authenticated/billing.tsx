@@ -53,6 +53,7 @@ import {
   inr,
   inr2,
   nextBillNumber,
+  nextManualBillNumber,
   num,
   parkProfile,
 } from "@/lib/sheets-schema";
@@ -247,7 +248,10 @@ function BillingPage() {
         new Date(billDate || Date.now()).getFullYear(),
       )
     : "GBP-0000";
-  const billNo = editingBillId || invoiceNo.trim() || nextBill;
+  const nextManual = wb ? nextManualBillNumber(wb.ledger.map((b) => b["bill_id"] ?? "")) : null;
+  // Manual slash serial (GBP/26-27/..) is your primary numbering — keep it.
+  // Leave blank to auto-assign, or type the next manual number. Duplicates are blocked.
+  const billNo = editingBillId || invoiceNo.trim() || nextManual || nextBill;
   const duplicateNo =
     invoiceNo.trim() !== "" &&
     (wb?.ledger ?? []).some((b) => (b["bill_id"] ?? "") === invoiceNo.trim());
@@ -519,8 +523,10 @@ function BillingPage() {
                   {editingBillId
                     ? "Invoice number is locked while editing an existing bill."
                     : duplicateNo
-                    ? "This invoice number already exists — it will update that bill."
-                    : `Leave blank to use the next number in series (${nextBill}).`}
+                    ? "This invoice number already exists — saving will update that existing bill (same number cannot be used for 2 clients)."
+                    : nextManual
+                    ? `Your manual serial — next is ${nextManual}. Type it, or leave blank to auto-use ${nextManual}.`
+                    : `Leave blank to auto-use ${nextBill}.`}
                 </p>
               </div>
               <div>

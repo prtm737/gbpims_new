@@ -15,6 +15,7 @@ import {
   gstEnabled,
   nextBillNumber,
   nextInvoiceNo,
+  nextManualBillNumber,
   parseMeters,
   settingNum,
   spaceIds,
@@ -1305,7 +1306,8 @@ export async function savePowerBill(input: PowerBillInput) {
     existing?.["bill_id"] ??
     (requested !== ""
       ? requested
-      : nextBillNumber(
+      : nextManualBillNumber(wb.ledger.map((b) => b["bill_id"] ?? "")) ??
+        nextBillNumber(
           wb.ledger.map((b) => b["bill_id"] ?? ""),
           new Date(input.bill_date || Date.now()).getFullYear(),
         ));
@@ -1328,10 +1330,12 @@ export async function savePowerBill(input: PowerBillInput) {
         existing = clash;
         billId = clash["bill_id"] ?? billId;
       } else {
-        billId = nextBillNumber(
-          freshWb.ledger.map((b) => b["bill_id"] ?? ""),
-          new Date(input.bill_date || Date.now()).getFullYear(),
-        );
+        billId =
+          nextManualBillNumber(freshWb.ledger.map((b) => b["bill_id"] ?? "")) ??
+          nextBillNumber(
+            freshWb.ledger.map((b) => b["bill_id"] ?? ""),
+            new Date(input.bill_date || Date.now()).getFullYear(),
+          );
       }
     }
   }
