@@ -21,7 +21,7 @@ export default defineConfig({
     // Netlify preset: free hosting, serves SSR via Netlify Functions, and its
     // *.netlify.app domain is reliably reachable in regions where
     // *.workers.dev module imports fail.
-    preset: "netlify",
+    preset: "node-server",
     routeRules: {
       "/**": {
         headers: {

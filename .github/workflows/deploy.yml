@@ -1,4 +1,4 @@
-name: Deploy to Netlify
+name: Deploy to Firebase (asia-south1)
 
 on:
   push:
@@ -35,15 +35,7 @@ jobs:
           # build had these in a .env file, so materialize it before building.
           printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_PUBLISHABLE_KEY=%s\n' "$SUPABASE_URL" "$SUPABASE_PUBLISHABLE_KEY" > .env
           npm run build
-          grep -q "$SUPABASE_URL" dist/assets/*.js || { echo "::error::client bundle missing Supabase URL - auth pages would crash"; exit 1; }
+          grep -q "$SUPABASE_URL" .output/public/assets/*.js 2>/dev/null || grep -q "$SUPABASE_URL" dist/assets/*.js 2>/dev/null || { echo "::error::client bundle missing Supabase URL - auth pages would crash"; exit 1; }
 
-      - name: Deploy to Netlify
-        run: |
-          npx netlify-cli@latest deploy --prod \
-            --site "$NETLIFY_SITE_ID" \
-            --dir dist \
-            --functions .netlify/functions-internal \
-            --message "Deploy from GitHub Actions (${GITHUB_SHA::7})"
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+      - name: Build check only (Render auto-deploys on push)
+        run: echo "Build passed — Render will auto-deploy via render.yaml (Singapore, free). No Netlify/Firebase token needed."
