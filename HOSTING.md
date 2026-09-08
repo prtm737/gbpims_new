@@ -1,7 +1,7 @@
 # GBPIMS — Hosting
 
-## Live at: https://gbpims.prtam737-gbpims.workers.dev (Cloudflare Workers — always-on, no sleep)
-Short URL: `https://gbpims.<subdomain>.workers.dev` (worker name `gbpims` = 6 chars). For even shorter, set `WORKER_NAME=gbp` → `https://gbp.<subdomain>.workers.dev` (3 chars).
+## Live at: https://gbpims.gbpims.workers.dev (Cloudflare Workers — always-on, no sleep)
+Short URL: `https://gbpims.gbpims.workers.dev` (14 chars host, no `prtm737` — subdomain `gbpims` + worker `gbpims`).
 
 Custom tiny domain (optional): add your domain to Cloudflare and set `CLOUDFLARE_CUSTOM_DOMAIN=gbp.yourdomain.com` as a GitHub secret or env var — deploy script will bind it.
 
