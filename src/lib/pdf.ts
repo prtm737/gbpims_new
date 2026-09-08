@@ -537,11 +537,14 @@ async function buildPowerBill(bill: PowerBill, o: PowerBillPdfOptions) {
   pdf.text(wrappedWords, M + 7, y + 12);
   y += wordsH;
 
-  pdf.setFont("helvetica", "italic");
-  pdf.setFontSize(8.4);
-  pdf.setTextColor(...MUTED);
-  pdf.text("Please ignore the arear amount if paid and furnish the payment details.", M, y + 12);
-  y += 18;
+  // The note only makes sense when the bill actually carries an arear figure.
+  if (bill.arrears > 0 || bill.surcharge > 0) {
+    pdf.setFont("helvetica", "italic");
+    pdf.setFontSize(8.4);
+    pdf.setTextColor(...MUTED);
+    pdf.text("Please ignore the arear amount if paid and furnish the payment details.", M, y + 12);
+    y += 18;
+  }
 
   if (bill.paid) {
     pdf.setFont("helvetica", "bold");

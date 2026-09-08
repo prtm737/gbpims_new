@@ -935,19 +935,16 @@ export async function deletePowerClient(clientId: string) {
 }
 
 /**
- * Creates a billing client for every active tenant that does not have one yet,
- * seeding a meter row from the space they occupy so a bill can be generated
- * straight away.
+ * One billing client per company. Creates clients for active tenants without
+ * one, tops up existing clients with any lab meters they are missing, and
+ * MERGES legacy duplicate rows (a company that got one PowerClients row per
+ * lab before the per-company fix): meters are combined into the first row,
+ * its duplicate rows are deleted, and their bills are re-pointed so arrears,
+ * readings and the ledger all resolve to a single company.
  */
 export async function importTenantClients() {
   const id = await requireSpreadsheetId();
   const wb = await readWorkbook(id, { fresh: true });
-  const existing = new Set(
-    wb.clients.map((c) => (c["incubatee_id"] ?? "").trim()).filter((v) => v !== ""),
-  );
-  const existingNames = new Set(
-    wb.clients.map((c) => (c["client_name"] ?? "").trim().toLowerCase()),
-  );
 
   const tenants = wb.incubatees.filter(
     (t) =>
@@ -966,17 +963,126 @@ export async function importTenantClients() {
     groups.set(key, group);
   }
 
+  // Existing client rows indexed by normalized name, keeping sheet order so
+  // the first row is the merge target for any duplicates.
+  const clientsByName = new Map<string, Row[]>();
+  for (const c of wb.clients) {
+    const key = (c["client_name"] ?? "").trim().toLowerCase();
+    if (key === "") continue;
+    const rows = clientsByName.get(key) ?? [];
+    rows.push(c);
+    clientsByName.set(key, rows);
+  }
+
+  const meterKey = (labName: string) => labName.trim().toLowerCase();
   let created = 0;
+  let merged = 0;
+  let updated = 0;
+
   for (const [key, group] of groups) {
-    if (existingNames.has(key)) continue;
-    const primary = group[0]!;
-    const incubateeId = group
-      .map((t) => (t["incubatee_id"] ?? "").trim())
-      .find((v) => v !== "");
-    if (incubateeId && existing.has(incubateeId)) continue;
+    const incubateeIds = [
+      ...new Set(
+        group.map((t) => (t["incubatee_id"] ?? "").trim()).filter((v) => v !== ""),
+      ),
+    ];
     const labs = [
       ...new Set(group.flatMap((t) => spaceIds(t["lab_id"])).filter((v) => v !== "")),
     ];
+    const existingRows = clientsByName.get(key) ?? [];
+
+    if (existingRows.length > 1) {
+      const primary = existingRows[0]!;
+      const primaryId = (primary["client_id"] ?? "").trim();
+      const primaryName = (primary["client_name"] ?? "").trim();
+      const dupRows = existingRows.slice(1);
+      if (primaryId === "") continue;
+
+      const meters: { id: string; labName: string; meterNo: string }[] = [];
+      for (const row of existingRows) {
+        for (const m of parseMeters(row["meters"])) {
+          if (m.labName.trim() === "" && m.meterNo.trim() === "") continue;
+          const k = meterKey(m.labName || m.meterNo);
+          if (meters.some((x) => meterKey(x.labName || x.meterNo) === k)) continue;
+          meters.push(m);
+        }
+      }
+      for (const lab of labs) {
+        if (meters.some((m) => meterKey(m.labName) === meterKey(lab))) continue;
+        meters.push({ id: `M-${meters.length + 1}`, labName: lab, meterNo: "" });
+      }
+      meters.forEach((m, i) => {
+        m.id = `M-${i + 1}`;
+      });
+      const pick = (field: string) =>
+        existingRows.map((r) => (r[field] ?? "").trim()).find((v) => v !== "") ?? "";
+
+      await savePowerClient({
+        client_id: primaryId,
+        client_name: primaryName,
+        address: pick("address"),
+        connected_load_kw: pick("connected_load_kw"),
+        whatsapp: pick("whatsapp"),
+        fixed_ac_units: pick("fixed_ac_units"),
+        ac_fixed_charge: pick("ac_fixed_charge"),
+        incubatee_id: (primary["incubatee_id"] ?? "").trim() || incubateeIds[0] || "",
+        notes: pick("notes"),
+        meters,
+      });
+      // Bills recorded under a duplicate id move to the surviving client.
+      const dupIds = dupRows
+        .map((d) => (d["client_id"] ?? "").trim())
+        .filter((v) => v !== "");
+      for (const bill of wb.ledger) {
+        const billId = (bill["bill_id"] ?? "").trim();
+        if (billId === "" || !dupIds.includes((bill["client_id"] ?? "").trim())) continue;
+        await updateRowById(id, "ledger", billId, {
+          client_id: primaryId,
+          client_name: primaryName,
+        });
+      }
+      for (const dupId of dupIds) {
+        await deleteRowById(id, "clients", dupId);
+      }
+      merged += dupRows.length;
+      continue;
+    }
+
+    if (existingRows.length === 1) {
+      // Single client row: add meters for labs it is missing and backfill the
+      // tenant link — never touching values the user has already configured.
+      const row = existingRows[0]!;
+      const meters = parseMeters(row["meters"]);
+      const missingLabs = labs.filter(
+        (lab) => !meters.some((m) => meterKey(m.labName) === meterKey(lab)),
+      );
+      const incubateeId = (row["incubatee_id"] ?? "").trim();
+      if (missingLabs.length === 0 && incubateeId !== "") continue;
+      const nextMeters = [
+        ...meters,
+        ...missingLabs.map((lab, i) => ({
+          id: `M-${meters.length + i + 1}`,
+          labName: lab,
+          meterNo: "",
+        })),
+      ];
+      await savePowerClient({
+        client_id: (row["client_id"] ?? "").trim(),
+        client_name: (row["client_name"] ?? "").trim(),
+        address: row["address"] ?? "",
+        connected_load_kw: row["connected_load_kw"] ?? "",
+        whatsapp: (row["whatsapp"] ?? "").trim() || (group[0]?.["phone"] ?? ""),
+        fixed_ac_units: row["fixed_ac_units"] ?? "",
+        ac_fixed_charge: row["ac_fixed_charge"] ?? "",
+        incubatee_id: incubateeId || incubateeIds[0] || "",
+        notes: row["notes"] ?? "",
+        meters: nextMeters,
+      });
+      updated += 1;
+      continue;
+    }
+
+    // No client row yet: create one covering every lab the company occupies.
+    const primary = group[0]!;
     const firstLab = (primary["lab_id"] ?? "").trim();
     const meters = labs.length
       ? labs.map((labId, i) => ({ id: `M-${i + 1}`, labName: labId, meterNo: "" }))
@@ -989,13 +1095,17 @@ export async function importTenantClients() {
           ? `${firstLab}, Guwahati Biotech Park`
           : "",
       whatsapp: primary["phone"] ?? "",
-      incubatee_id: incubateeId ?? "",
+      incubatee_id: incubateeIds[0] ?? "",
       meters,
     });
-    existingNames.add(key);
     created += 1;
   }
-  return { created, skipped: tenants.length - created };
+  return {
+    created,
+    merged,
+    updated,
+    skipped: tenants.length - created - merged - updated,
+  };
 }
 
 export type PowerBillInput = {

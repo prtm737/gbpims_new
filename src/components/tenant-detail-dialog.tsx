@@ -37,8 +37,10 @@ export function TenantDetailDialog({
   const incubateeId = (tenant["incubatee_id"] ?? "").trim();
   const rent = incubateeRent(wb, tenant);
   const invoices = rentInvoiceViews(wb).filter((r) => r.incubateeId === incubateeId);
-  const clients = powerClients(wb).filter((c) => c.incubateeId === incubateeId);
-  const clientIds = clients.map((c) => c.clientId);
+  const clients = powerClients(wb).filter(
+    (c) => c.incubateeId === incubateeId || c.incubateeIds.includes(incubateeId),
+  );
+  const clientIds = clients.flatMap((c) => c.clientIds);
   const bills = powerBills(wb).filter((b) => clientIds.includes(b.clientId));
   const receipts = wb.payments.filter((p) => (p["incubatee_id"] ?? "") === incubateeId);
   const profile = parkProfile(wb.settings);

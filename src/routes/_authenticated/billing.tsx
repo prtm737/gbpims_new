@@ -96,10 +96,20 @@ function BillingPage() {
   const removeClient = useSheetMutation(useServerFn(deletePowerClientFn), "Client removed");
   const importClients = useSheetMutation(
     useServerFn(importTenantClientsFn),
-    (out) =>
-      out.created > 0
-        ? `${out.created} billing client${out.created > 1 ? "s" : ""} created from tenants`
-        : "Every active tenant already has a billing client",
+    (out) => {
+      const bits: string[] = [];
+      if (out.created > 0)
+        bits.push(`${out.created} billing client${out.created > 1 ? "s" : ""} created`);
+      if (out.merged > 0)
+        bits.push(
+          `${out.merged} duplicate client${out.merged > 1 ? "s" : ""} merged into their company`,
+        );
+      if (out.updated > 0)
+        bits.push(`${out.updated} client${out.updated > 1 ? "s" : ""} topped up with lab meters`);
+      return bits.length > 0
+        ? `Tenant sync — ${bits.join(" · ")}`
+        : "Every active tenant already has a billing client";
+    },
   );
   const saveBill = useSheetMutation(
     useServerFn(savePowerBillFn),
@@ -152,8 +162,11 @@ function BillingPage() {
   const [pdfDownloader, setPdfDownloader] = useState<(() => void) | null>(null);
 
   const selected = clients.find((c) => c.clientId === clientId);
-  const prevMap = wb && selected ? lastReadings(wb, selected.clientId) : {};
-  const autoArrears = wb && selected ? outstandingArrears(wb, selected.clientId) : 0;
+  // A merged company may still have several PowerClients rows in the sheet —
+  // bills, arrears and previous readings must resolve across ALL of them.
+  const allClientIds = selected ? selected.clientIds : [];
+  const prevMap = wb && selected ? lastReadings(wb, allClientIds) : {};
+  const autoArrears = wb && selected ? outstandingArrears(wb, allClientIds) : 0;
   const tariffRate = electricityTariffRate(wb?.settings);
   const fixedRate = electricityFixedChargeRate(wb?.settings);
   const surchargePct = Number(wb?.settings?.["late_surcharge_pct"] || 1.5) || 1.5;
@@ -241,7 +254,9 @@ function BillingPage() {
   const profile = parkProfile(wb?.settings ?? {});
 
   function powerPdfOptions(bill: PowerBill) {
-    const client = clients.find((c) => c.clientId === bill.clientId) ?? selected;
+    const client = clients.find(
+      (c) => c.clientId === bill.clientId || c.clientIds.includes(bill.clientId),
+    ) ?? selected;
     return {
       ...profile,
       ...(preparedBy.trim() ? { preparedBy: preparedBy.trim() } : {}),
@@ -262,8 +277,13 @@ function BillingPage() {
   }
 
   function loadGeneratedBill(bill: PowerBill) {
+    // The bill may reference a duplicate client id that has since been merged
+    // into the company's primary client — resolve to the merged entry.
+    const owner =
+      clients.find((c) => c.clientId === bill.clientId || c.clientIds.includes(bill.clientId)) ??
+      selected;
     setEditingBillId(bill.billId);
-    setClientId(bill.clientId);
+    setClientId(owner?.clientId ?? bill.clientId);
     setInvoiceNo(bill.billId);
     setBillDate(bill.billDate || today());
     setDueDate(bill.dueDate || plusDays(10));

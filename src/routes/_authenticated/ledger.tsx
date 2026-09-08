@@ -280,7 +280,9 @@ function LedgerPage() {
     });
 
     bills.forEach((b) => {
-      const client = clients.find((c) => c.clientId === b.clientId);
+      const client = clients.find(
+        (c) => c.clientId === b.clientId || c.clientIds.includes(b.clientId),
+      );
       const tenantId = (client?.incubateeId ?? "").trim();
       // Resolve the company name from the billing client, falling back to the
       // tenant list so a client row without an incubatee link still merges

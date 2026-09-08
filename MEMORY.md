@@ -60,6 +60,35 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-08 — Billing engine: one client per company + arrears-note fix + PDF preview fix
+- Billing engine (and everything using `powerClients()`) now merges PowerClients
+  rows that share a company name into ONE entry, like the Ledger: `PowerClient`
+  gained `clientIds` (all merged row ids, primary first) + `incubateeIds`; meters
+  union by lab name; blanks filled from duplicates. `lastReadings`/
+  `outstandingArrears`/`isOrphanBill` accept `string | string[]` and check every
+  merged id — auto arrears and previous readings now cover all labs of a company.
+- `importTenantClients` (Billing → "Sync tenants") is now a consolidation pass:
+  duplicate client rows for the same company are MERGED into the first row
+  (meters combined, load/AC/profile fields picked first-non-empty), their ledger
+  bills re-pointed to the surviving client_id, dup rows deleted; single rows get
+  missing lab meters + incubatee link topped up. Returns `{created, merged,
+  updated, skipped}`; billing page toast lists all three counts.
+- billing.tsx: `selected`/`powerPdfOptions`/`loadGeneratedBill` resolve clients
+  via `clientIds` so bills recorded under a pre-merge duplicate id still find
+  their company (and its merged client is used for the bill form).
+- pdf.ts: "Please ignore the arear amount if paid…" note now prints ONLY when
+  `bill.arrears > 0 || bill.surcharge > 0` (was unconditional).
+- PDF preview fix: CSP had no `frame-src`, so `default-src 'self'` blocked the
+  preview dialog's `blob:` iframe (blank dialog on Preview). Added
+  `frame-src 'self' blob:;` (+ `media-src 'self' blob:;`) to BOTH CSP strings —
+  `vite.config.ts` routeRules AND `public/_headers` (they must stay in sync).
+- Gotcha: user should press "Sync tenants" once to physically merge duplicate
+  PowerClients rows; until then the UI merges them at render time anyway.
+- Typecheck (tmp deps: /data/.../tmp/opencode/gbpdeps — needs `npm install
+  --legacy-peer-deps` there after any `--no-save` install prunes it; copy
+  package.json from repo first) = only the pre-existing __root.tsx
+  ErrorComponentProps error. vite build OK.
+
 ### 2026-09-07 — Office-workflow upgrade batch (all 9 audit items)
 - Daily backup: backup.server.ts writes backups/<date>/workbook.json into the
   gbpims-pdfs bucket (90 days kept, auto-pruned). Fires once/day from

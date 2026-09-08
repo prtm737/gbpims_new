@@ -14,6 +14,13 @@ import {
 
 export type PowerClient = {
   clientId: string;
+  /**
+   * Every billing-client id behind this entry. Most entries hold a single id;
+   * a company that still has one PowerClients row per lab (pre-merge legacy
+   * data) holds several, and bills/readings/arrears lookups must cover them
+   * all. New bill generation always writes against clientId (the primary).
+   */
+  clientIds: string[];
   name: string;
   address: string;
   loadKw: number;
@@ -21,6 +28,7 @@ export type PowerClient = {
   fixedAcUnits: number;
   acFixedCharge: number;
   incubateeId: string;
+  incubateeIds: string[];
   meters: Meter[];
   notes: string;
 };
@@ -66,21 +74,59 @@ export type PowerBill = {
   manual: boolean;
 };
 
+/**
+ * Billing clients shown in the engine. A company occupying several labs should
+ * appear ONCE — rows in PowerClients that share a company name (case- and
+ * spacing-insensitive) are merged into a single entry whose meters, load and
+ * client ids cover every row, matching how the Ledger groups clients.
+ */
 export function powerClients(wb: Workbook): PowerClient[] {
-  return wb.clients
-    .filter((c) => (c["client_id"] ?? "").trim() !== "")
-    .map((c) => ({
+  const rows = wb.clients.filter((c) => (c["client_id"] ?? "").trim() !== "");
+  const merged: PowerClient[] = [];
+  const byKey = new Map<string, PowerClient>();
+  for (const c of rows) {
+    const name = (c["client_name"] ?? "").trim();
+    const key = name.toLowerCase().replace(/\s+/g, " ");
+    const meter = parseMeters(c["meters"]);
+    const candidate: PowerClient = {
       clientId: c["client_id"] ?? "",
-      name: c["client_name"] ?? "",
+      clientIds: [c["client_id"] ?? ""],
+      name,
       address: c["address"] ?? "",
       loadKw: num(c["connected_load_kw"]),
       whatsapp: c["whatsapp"] ?? "",
       fixedAcUnits: num(c["fixed_ac_units"]),
       acFixedCharge: num(c["ac_fixed_charge"]),
       incubateeId: c["incubatee_id"] ?? "",
-      meters: parseMeters(c["meters"]),
+      incubateeIds: [c["incubatee_id"] ?? ""].filter((v) => v !== ""),
+      meters: meter,
       notes: c["notes"] ?? "",
-    }));
+    };
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, candidate);
+      merged.push(candidate);
+      continue;
+    }
+    // Merge the duplicate row into the first entry for this company.
+    existing.clientIds.push(candidate.clientId);
+    if (candidate.incubateeId && !existing.incubateeIds.includes(candidate.incubateeId)) {
+      existing.incubateeIds.push(candidate.incubateeId);
+    }
+    if (!existing.address && candidate.address) existing.address = candidate.address;
+    if (!existing.whatsapp && candidate.whatsapp) existing.whatsapp = candidate.whatsapp;
+    if (candidate.loadKw > existing.loadKw) existing.loadKw = candidate.loadKw;
+    if (candidate.fixedAcUnits > existing.fixedAcUnits) existing.fixedAcUnits = candidate.fixedAcUnits;
+    if (candidate.acFixedCharge > existing.acFixedCharge) existing.acFixedCharge = candidate.acFixedCharge;
+    const seenLabs = new Set(existing.meters.map((m) => m.labName.toLowerCase()));
+    for (const m of candidate.meters) {
+      if (!seenLabs.has(m.labName.toLowerCase())) {
+        seenLabs.add(m.labName.toLowerCase());
+        existing.meters.push(m);
+      }
+    }
+  }
+  return merged;
 }
 
 export function powerBills(wb: Workbook): PowerBill[] {
@@ -92,7 +138,9 @@ export function powerBills(wb: Workbook): PowerBill[] {
 
 /** True when the bill points at a billing client that no longer exists. */
 export function isOrphanBill(bill: PowerBill, clients: PowerClient[]): boolean {
-  return !clients.some((c) => c.clientId === bill.clientId);
+  return !clients.some(
+    (c) => c.clientId === bill.clientId || c.clientIds.includes(bill.clientId),
+  );
 }
 
 function toBill(b: Row): PowerBill {
@@ -146,10 +194,14 @@ function toBill(b: Row): PowerBill {
 }
 
 /** Latest present readings per meter for a client, used to prefill "previous". */
-export function lastReadings(wb: Workbook, clientId: string): Record<string, number> {
+export function lastReadings(
+  wb: Workbook,
+  clientId: string | string[],
+): Record<string, number> {
+  const ids = Array.isArray(clientId) ? clientId : [clientId];
   const out: Record<string, number> = {};
   powerBills(wb)
-    .filter((b) => b.clientId === clientId)
+    .filter((b) => ids.includes(b.clientId))
     .slice()
     .reverse()
     .forEach((b) => {
@@ -160,10 +212,15 @@ export function lastReadings(wb: Workbook, clientId: string): Record<string, num
   return out;
 }
 
-/** Sum of all unpaid bills for a client — the auto arrears figure. */
-export function outstandingArrears(wb: Workbook, clientId: string, excludeBillId?: string): number {
+/** Sum of all unpaid bills for a client (across merged rows) — the auto arrears figure. */
+export function outstandingArrears(
+  wb: Workbook,
+  clientId: string | string[],
+  excludeBillId?: string,
+): number {
+  const ids = Array.isArray(clientId) ? clientId : [clientId];
   return powerBills(wb)
-    .filter((b) => b.clientId === clientId && !b.paid && b.billId !== excludeBillId)
+    .filter((b) => ids.includes(b.clientId) && !b.paid && b.billId !== excludeBillId)
     .reduce((s, b) => s + b.balance, 0);
 }
 
