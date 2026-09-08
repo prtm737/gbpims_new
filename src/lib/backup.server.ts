@@ -1,7 +1,7 @@
 // Server-only daily backup of the whole workbook into Supabase Storage.
 // Backups live in the same private bucket as the PDF archive, under
 // backups/<YYYY-MM-DD>/workbook.json. The last 90 days are kept.
-import { TABS, type Workbook } from "./sheets-schema";
+import { TABS, type Row, type Workbook } from "./sheets-schema";
 
 const BACKUP_PREFIX = "backups";
 const KEEP_DAYS = 90;
@@ -125,3 +125,229 @@ export async function getBackupDownloadUrl(
 
 /** Tabs the backup covers — shown in the UI so staff know what is inside. */
 export const BACKUP_TABS = Object.values(TABS);
+
+/* ------------------------- backup recovery tool --------------------------- */
+
+export type RecoveryRow = {
+  tab: keyof typeof TABS;
+  id: string;
+  summary: string;
+  backupDay: string;
+};
+
+export type RecoveryReport = {
+  backupDays: string[];
+  scannedBackups: number;
+  missing: RecoveryRow[];
+  error?: string | undefined;
+};
+
+type BackupEntry = { at?: string; workbook?: Partial<Record<keyof typeof TABS, Record<string, string>[]>> };
+
+/** Natural id column per tab; tabs without one are not scanned. */
+const ROW_ID_FIELD: Record<keyof typeof TABS, string | undefined> = {
+  ledger: "bill_id",
+  rent: "invoice_id",
+  labs: "lab_id",
+  incubatees: "incubatee_id",
+  clients: "client_id",
+  payments: "payment_id",
+  settings: undefined,
+  audit: undefined,
+};
+
+function rowId(tab: keyof typeof TABS, row: Record<string, string>): string {
+  const field = ROW_ID_FIELD[tab];
+  return field ? String(row[field] ?? "").trim() : "";
+}
+
+async function fetchBackupJson(path: string): Promise<BackupEntry | null> {
+  try {
+    const db = await admin();
+    const { data } = await db.storage
+      .from("gbpims-pdfs")
+      .createSignedUrl(path, 60);
+    if (!data?.signedUrl) return null;
+    const res = await fetch(data.signedUrl);
+    if (!res.ok) return null;
+    return (await res.json()) as BackupEntry;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeRow(tab: keyof typeof TABS, row: Record<string, string>): string {
+  const pick = (field: string) => (row[field] ?? "").trim();
+  switch (tab) {
+    case "ledger":
+      return `${pick("client_name") || "—"} · ${pick("bill_date") || "undated"} · ₹${pick("total_amount") || "0"}`;
+    case "rent":
+      return `${pick("company_name") || "—"} · ${pick("month") || pick("invoice_date") || "—"} · ₹${pick("amount") || "0"}`;
+    case "incubatees":
+      return `${pick("company_name") || "—"} · ${pick("lab_id") || "no lab"}`;
+    case "clients":
+      return `${pick("client_name") || "—"} · ${pick("address") || ""}`;
+    case "payments":
+      return `${pick("client_name") || pick("incubatee_id") || "—"} · ${pick("date") || "—"} · ₹${pick("amount") || "0"}`;
+    case "labs":
+      return `${pick("name") || pick("lab_id")} · ${pick("status") || ""}`;
+    default:
+      return "";
+  }
+}
+
+/**
+ * Compare the live sheet against every daily backup: a row that exists in a
+ * backup but not in the live sheet was lost somewhere along the way — list it
+ * so one tap can restore it. Read-only; never writes to the sheet.
+ */
+export async function scanMissingRows(): Promise<RecoveryReport> {
+  try {
+    const { requireSpreadsheetId } = await import("./gbp.server");
+    const { readWorkbook } = await import("./sheets.server");
+    const spreadsheetId = await requireSpreadsheetId();
+    const live = await readWorkbook(spreadsheetId, { fresh: true });
+
+    const backups = await listBackups();
+    const days = [...new Set(backups.map((b) => b.day))].sort().reverse();
+    const tabKeys = Object.keys(TABS) as (keyof typeof TABS)[];
+
+    const liveIds = new Map<keyof typeof TABS, Set<string>>();
+    for (const tab of tabKeys) {
+      const rows = live[tab] as Row[] | undefined;
+      liveIds.set(
+        tab,
+        new Set(
+          (rows ?? []).map((r) => rowId(tab, r)).filter((v) => v !== ""),
+        ),
+      );
+    }
+
+    // Newest copy wins when the same id is missing across several backups.
+    const missingIds = new Map<
+      keyof typeof TABS,
+      Map<string, { day: string; row: Record<string, string> }>
+    >();
+    for (const tab of tabKeys) missingIds.set(tab, new Map());
+
+    let scannedBackups = 0;
+    for (const day of days.slice(0, 14)) {
+      const files = backups.filter((b) => b.day === day);
+      for (const file of files) {
+        const parsed = await fetchBackupJson(file.path);
+        const wb = parsed?.workbook;
+        if (!wb) continue;
+        for (const tab of tabKeys) {
+          const idField = ROW_ID_FIELD[tab];
+          if (!idField) continue; // settings/audit have no natural key
+          const target = missingIds.get(tab)!;
+          for (const row of wb[tab] ?? []) {
+            const id = String(row[idField] ?? "").trim();
+            if (id === "") continue;
+            if (liveIds.get(tab)!.has(id)) continue;
+            if (!target.has(id)) target.set(id, { day, row });
+          }
+        }
+        scannedBackups += 1;
+      }
+    }
+
+    const missing: RecoveryRow[] = [];
+    for (const tab of tabKeys) {
+      const idField = ROW_ID_FIELD[tab];
+      if (!idField) continue;
+      for (const [id, { day, row }] of missingIds.get(tab)!) {
+        missing.push({
+          tab,
+          id,
+          summary: summarizeRow(tab, row),
+          backupDay: day,
+        });
+      }
+    }
+
+    return { backupDays: days, scannedBackups, missing };
+  } catch (err) {
+    return {
+      backupDays: [],
+      scannedBackups: 0,
+      missing: [],
+      error: (err as Error).message,
+    };
+  }
+}
+
+/**
+ * Restore missing rows from the newest backup that holds them. Only rows that
+ * are still absent from the live sheet are appended, so restoring is safe to
+ * re-run and can never duplicate data.
+ */
+export async function restoreMissingRows(
+  ids: { tab: keyof typeof TABS; id: string }[],
+): Promise<{ restored: number; stillMissing: string[] }> {
+  const { requireSpreadsheetId } = await import("./gbp.server");
+  const { readWorkbook, appendRows } = await import("./sheets.server");
+  const spreadsheetId = await requireSpreadsheetId();
+
+  const backups = await listBackups();
+  const days = [...new Set(backups.map((b) => b.day))].sort().reverse();
+  const tabKeys = Object.keys(TABS) as (keyof typeof TABS)[];
+
+  const pending = new Set(ids.map((x) => `${String(x.tab)}:${x.id}`));
+  let restored = 0;
+
+  for (const day of days.slice(0, 14)) {
+    if (pending.size === 0) break;
+    const files = backups.filter((b) => b.day === day);
+    for (const file of files) {
+      if (pending.size === 0) break;
+      const parsed = await fetchBackupJson(file.path);
+      const wb = parsed?.workbook;
+      if (!wb) continue;
+      for (const tab of tabKeys) {
+        const idField = ROW_ID_FIELD[tab];
+        if (!idField) continue;
+        const rows = (wb[tab] ?? []).filter((r) => {
+          const id = String(r[idField] ?? "").trim();
+          return id !== "" && pending.has(`${String(tab)}:${id}`);
+        });
+        if (rows.length === 0) continue;
+        // Append only rows still absent from the sheet (someone may have
+        // restored them between the scan and this call).
+        const liveNow = await readWorkbook(spreadsheetId, { fresh: true });
+        const existing = new Set(
+          ((liveNow[tab] as Row[] | undefined) ?? [])
+            .map((r) => rowId(tab, r))
+            .filter((v) => v !== ""),
+        );
+        const toAdd = rows.filter((r) => {
+          const id = String(r[idField] ?? "").trim();
+          if (existing.has(id)) {
+            pending.delete(`${String(tab)}:${id}`);
+            return false;
+          }
+          return true;
+        });
+        if (toAdd.length === 0) continue;
+        await appendRows(spreadsheetId, tab, toAdd);
+        for (const r of toAdd) {
+          pending.delete(`${String(tab)}:${String(r[idField] ?? "").trim()}`);
+        }
+        restored += toAdd.length;
+      }
+    }
+  }
+
+  // Fresh verification read: anything still absent is reported back exactly,
+  // never silently dropped.
+  const after = await readWorkbook(spreadsheetId, { fresh: true });
+  const stillMissing: string[] = [];
+  for (const item of ids) {
+    const idField = ROW_ID_FIELD[item.tab];
+    if (!idField) continue;
+    const rows = (after[item.tab] as Row[] | undefined) ?? [];
+    const found = rows.some((r) => String(r[idField] ?? "").trim() === item.id);
+    if (!found) stillMissing.push(`${String(item.tab)}:${item.id}`);
+  }
+  return { restored, stillMissing };
+}

@@ -89,6 +89,45 @@ export const backupNowFn = createServerFn({ method: "POST" })
     return out;
   });
 
+export const scanMissingRowsFn = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { requireRole } = await import("./gbp.server");
+    await requireRole(context.supabase, context.userId, ["admin"]);
+    const { scanMissingRows } = await import("./backup.server");
+    return scanMissingRows();
+  });
+
+export const restoreMissingRowsFn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((data: unknown) =>
+    z
+      .object({
+        ids: z
+          .array(
+            z.object({
+              tab: z.enum([
+                "ledger",
+                "rent",
+                "labs",
+                "incubatees",
+                "clients",
+                "payments",
+              ]),
+              id: z.string().trim().min(1).max(80),
+            }),
+          )
+          .max(2000),
+      })
+      .parse(data),
+  )
+  .handler(async ({ context, data }) => {
+    const { requireRole } = await import("./gbp.server");
+    await requireRole(context.supabase, context.userId, ["admin"]);
+    const { restoreMissingRows } = await import("./backup.server");
+    return restoreMissingRows(data.ids);
+  });
+
 export const connectSheet = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((data: { link: string }) =>

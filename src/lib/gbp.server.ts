@@ -1029,9 +1029,13 @@ export async function importTenantClients() {
         meters,
       });
       // Bills recorded under a duplicate id move to the surviving client.
-      const dupIds = dupRows
-        .map((d) => (d["client_id"] ?? "").trim())
-        .filter((v) => v !== "");
+      const dupIds = [
+        ...new Set(
+          dupRows
+            .map((d) => (d["client_id"] ?? "").trim())
+            .filter((v) => v !== "" && v !== primaryId),
+        ),
+      ];
       for (const bill of wb.ledger) {
         const billId = (bill["bill_id"] ?? "").trim();
         if (billId === "" || !dupIds.includes((bill["client_id"] ?? "").trim())) continue;
@@ -1104,7 +1108,7 @@ export async function importTenantClients() {
     created,
     merged,
     updated,
-    skipped: tenants.length - created - merged - updated,
+    skipped: Math.max(0, tenants.length - created - merged - updated),
   };
 }
 
@@ -1183,7 +1187,7 @@ export async function savePowerBill(input: PowerBillInput) {
   });
 
   const requested = (input.bill_id ?? "").trim();
-  let existing = requested ? wb.ledger.find((b) => b["bill_id"] === requested) : undefined;
+  let existing = requested ? wb.ledger.find((b) => (b["bill_id"] ?? "") === requested) : undefined;
   let billId =
     existing?.["bill_id"] ??
     (requested !== ""
@@ -1194,13 +1198,19 @@ export async function savePowerBill(input: PowerBillInput) {
         ));
 
   if (!existing) {
-    // Re-check against a fresh read before appending: a stale cache can
-    // allocate a bill number that already exists, and appending it would
-    // overwrite another client's bill row (reports of "bills missing from
-    // the sheet" traced back to exactly this).
+    // Re-check against a fresh read before writing: a stale cache can allocate
+    // a bill number that already exists, and writing it could clobber another
+    // client's bill row (reports of "bills missing from the sheet" traced back
+    // to exactly this). The fresh read must fail loudly on a Google error —
+    // never silently fall back to stale data here.
     const freshWb = await readWorkbook(id, { fresh: true });
     const clash = freshWb.ledger.find((b) => (b["bill_id"] ?? "") === billId);
     if (clash) {
+      if ((clash["client_id"] ?? "") !== input.client_id) {
+        throw new Error(
+          `Bill number ${billId} already belongs to ${clash["client_name"] || "another client"}. Nothing was saved — pick a different invoice number.`,
+        );
+      }
       if (requested !== "") {
         existing = clash;
         billId = clash["bill_id"] ?? billId;
@@ -1254,8 +1264,18 @@ export async function savePowerBill(input: PowerBillInput) {
     timestamp: new Date().toISOString(),
   };
 
-  if (existing) await updateRowById(id, "ledger", billId, row);
-  else await appendRows(id, "ledger", [row]);
+  if (existing) {
+    const updated = await updateRowById(id, "ledger", billId, row);
+    if (!updated) {
+      // The cached read said the bill exists but the sheet disagrees. Appending
+      // here would create a duplicate bill row — surface the conflict instead.
+      throw new Error(
+        `Bill ${billId} no longer exists in the sheet. Reload the billing page and try again — nothing was overwritten.`,
+      );
+    }
+  } else {
+    await appendRows(id, "ledger", [row]);
+  }
   return { billId, total: computed.total };
 }
 

@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ExternalLink } from "lucide-react";
+import { toast } from "sonner";
+import { ArchiveRestore, ExternalLink, Loader2, ScanSearch } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
@@ -23,7 +24,9 @@ import {
   getBackupDownloadUrlFn,
   listBackupsFn,
   listStaffFn,
+  restoreMissingRowsFn,
   saveSettingsFn,
+  scanMissingRowsFn,
   setUserRoleFn,
 } from "@/lib/gbp.functions";
 import { DEFAULT_SETTINGS } from "@/lib/sheets-schema";
@@ -162,6 +165,10 @@ function SettingsPage() {
 
         {connected && (
           <BackupsCard isAdmin={isAdmin} />
+        )}
+
+        {connected && isAdmin && (
+          <RecoveryCard />
         )}
 
         {connected && (
@@ -327,6 +334,144 @@ function BackupsCard({ isAdmin }: { isAdmin: boolean }) {
             </li>
           ))}
         </ul>
+      )}
+    </section>
+  );
+}
+
+type RecoveryReport = {
+  backupDays: string[];
+  scannedBackups: number;
+  missing: { tab: string; id: string; summary: string; backupDay: string }[];
+  error?: string;
+};
+
+/** Compares the live sheet with the daily backups and restores anything lost. */
+function RecoveryCard() {
+  const queryClient = useQueryClient();
+  const scanFn = useServerFn(scanMissingRowsFn);
+  const restoreFn = useServerFn(restoreMissingRowsFn);
+  const [report, setReport] = useState<RecoveryReport | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [scanError, setScanError] = useState("");
+
+  async function scan() {
+    setScanning(true);
+    setScanError("");
+    try {
+      const out = (await scanFn()) as RecoveryReport;
+      setReport(out);
+      if (out.error) setScanError(out.error);
+    } catch (err) {
+      setScanError((err as Error).message);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function restoreAll() {
+    if (!report || report.missing.length === 0) return;
+    if (
+      !confirm(
+        `Restore ${report.missing.length} missing row(s) from the backups into the live sheet?`,
+      )
+    )
+      return;
+    setRestoring(true);
+    try {
+      const out = (await restoreFn({
+        data: {
+          ids: report.missing.map((m) => ({
+            tab: m.tab as
+              | "ledger"
+              | "rent"
+              | "labs"
+              | "incubatees"
+              | "clients"
+              | "payments",
+            id: m.id,
+          })),
+        },
+      })) as { restored: number; stillMissing: string[] };
+      if (out.restored > 0) {
+        toast.success(`Restored ${out.restored} row(s) into the sheet`);
+      } else {
+        toast.info("Nothing needed restoring — the sheet already has those rows.");
+      }
+      if (out.stillMissing.length > 0) {
+        toast.warning(
+          `${out.stillMissing.length} row(s) could not be found in any backup: ${out.stillMissing.slice(0, 5).join(", ")}${out.stillMissing.length > 5 ? "…" : ""}`,
+        );
+      }
+      setReport(null);
+      // Pull the freshly restored rows into every page immediately.
+      await queryClient.invalidateQueries({ queryKey: ["workbook"] });
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-amber-500/30 bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-display text-sm font-semibold flex items-center gap-2">
+            <ArchiveRestore className="size-4 text-amber-500" />
+            Recover lost rows
+          </h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Compares every daily backup against the live sheet and restores rows that went
+            missing (bills, invoices, tenants, clients…). Read-only until you press restore.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={scanning || restoring}
+          onClick={() => void scan()}
+        >
+          {scanning ? <Loader2 className="mr-1 size-4 animate-spin" /> : <ScanSearch className="mr-1 size-4" />}
+          {scanning ? "Scanning backups…" : "Scan for lost rows"}
+        </Button>
+      </div>
+      {scanError && (
+        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+          {scanError}
+        </p>
+      )}
+      {report && !scanError && (
+        <div className="mt-3">
+          <p className="text-xs text-muted-foreground">
+            Scanned {report.scannedBackups} backup file(s) across {report.backupDays.length} day(s).
+          </p>
+          {report.missing.length === 0 ? (
+            <p className="mt-2 rounded-md border border-primary/25 bg-primary/5 p-3 text-sm">
+              ✅ No lost rows found — the live sheet contains everything the backups do.
+            </p>
+          ) : (
+            <>
+              <ul className="mt-2 max-h-64 divide-y divide-border overflow-y-auto rounded-md border border-border">
+                {report.missing.map((m) => (
+                  <li key={`${m.tab}:${m.id}`} className="px-3 py-2 text-sm">
+                    <span className="font-medium">{m.id}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {m.tab} · from backup {m.backupDay} · {m.summary}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <Button className="mt-3" size="sm" disabled={restoring} onClick={() => void restoreAll()}>
+                {restoring ? <Loader2 className="mr-1 size-4 animate-spin" /> : <ArchiveRestore className="mr-1 size-4" />}
+                {restoring
+                  ? "Restoring…"
+                  : `Restore ${report.missing.length} row(s) into the sheet`}
+              </Button>
+            </>
+          )}
+        </div>
       )}
     </section>
   );

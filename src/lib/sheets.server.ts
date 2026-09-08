@@ -184,17 +184,21 @@ function bumpWriteGeneration(spreadsheetId: string): void {
     (writeGeneration.get(spreadsheetId) ?? 0) + 1,
   );
 }
-// Fresh window served straight from memory, plus a longer stale window that is
+// Fresh window served straight from memory, plus a short stale window that is
 // served instantly while a background refresh runs (keeps Sheets quota low).
+// The stale window is deliberately SHORT: serving an hour-old workbook after a
+// write made freshly-created bills "disappear" from the UI.
 const WORKBOOK_TTL_MS = 120_000;
-const WORKBOOK_STALE_MS = 60 * 60_000;
+const WORKBOOK_STALE_MS = 5 * 60_000;
 const inFlight = new Map<string, Promise<Workbook>>();
 
 // Durable snapshot in Postgres. Serverless workers start cold constantly, so the
 // in-memory cache alone means every cold request pays a full Sheets read (and
 // burns quota). The snapshot lets a cold worker answer instantly and refresh in
 // the background, and it is also the fallback when Google rate limits us.
-const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60_000;
+// Capped at a few minutes: serving a day-old snapshot is what made written
+// bills vanish from the app for hours at a time.
+const SNAPSHOT_MAX_AGE_MS = 10 * 60_000;
 
 async function loadSnapshot(spreadsheetId: string): Promise<CacheEntry | null> {
   try {
@@ -1155,7 +1159,7 @@ export async function readWorkbook(
 
 async function fetchWorkbook(
   spreadsheetId: string,
-  options: { ensure?: boolean } = {},
+  options: { ensure?: boolean; fresh?: boolean } = {},
 ): Promise<Workbook> {
   const genAtStart = writeGeneration.get(spreadsheetId) ?? 0;
   const tabKeys = Object.keys(TABS) as TabKey[];
@@ -1168,10 +1172,13 @@ async function fetchWorkbook(
     );
   } catch (error) {
     // Never blank the app on a transient Google failure (quota/network): fall
-    // back to the last known copy from memory or the durable snapshot.
+    // back to the last known copy from memory or the durable snapshot. A FRESH
+    // read must never be answered from a cache though — the caller explicitly
+    // asked for the live sheet (post-write UI refresh, manual sync), and
+    // serving a stale copy here is how written bills "disappeared".
     const fallback =
-      workbookCache.get(spreadsheetId) ??
-      (await loadSnapshot(spreadsheetId)) ??
+      (!options.fresh && workbookCache.get(spreadsheetId)) ??
+      (!options.fresh ? await loadSnapshot(spreadsheetId) : null) ??
       null;
     if (fallback) {
       workbookCache.set(spreadsheetId, {
@@ -1227,6 +1234,27 @@ async function fetchWorkbook(
   return workbook;
 }
 
+/**
+ * Authoritative re-read fired after every write. A read that raced a write can
+ * cache (and snapshot) a PRE-write copy of the workbook — from then on every
+ * cold worker would serve data missing the just-written row, which is exactly
+ * how freshly created bills "vanished" for hours. Re-reading after the write
+ * and re-caching the post-write state closes that window.
+ */
+function revalidateAfterWrite(spreadsheetId: string): void {
+  if (revalidating.has(spreadsheetId)) return;
+  revalidating.add(spreadsheetId);
+  fetchWorkbook(spreadsheetId, { ensure: false })
+    .catch(() => {
+      /* best effort — the next read will reconcile */
+    })
+    .finally(() => {
+      revalidating.delete(spreadsheetId);
+    });
+}
+
+const revalidating = new Set<string>();
+
 /** Make sure every lab in the roster (L01..L26) exists as a row. */
 export async function syncLabRoster(spreadsheetId: string): Promise<number> {
   const wb = await readWorkbook(spreadsheetId, { fresh: true, ensure: false });
@@ -1266,6 +1294,7 @@ export async function appendRows(
     },
   );
   invalidateWorkbookCache(spreadsheetId);
+  revalidateAfterWrite(spreadsheetId);
 }
 
 /** Rewrite the header row of one tab (idempotent) so new columns exist. */
@@ -1293,10 +1322,19 @@ export async function updateRowById(
   );
   const values = data.values ?? [];
   const headers = HEADERS[tab];
-  const index = values.findIndex(
-    (r, i) => i > 0 && String(r[0] ?? "") === idValue,
-  );
-  if (index === -1) return false;
+  const matches: number[] = [];
+  values.forEach((r, i) => {
+    if (i > 0 && String(r[0] ?? "") === idValue) matches.push(i);
+  });
+  if (matches.length === 0) return false;
+  if (matches.length > 1) {
+    // Updating the first of several rows sharing an id can silently rewrite
+    // the WRONG row — refuse instead of risking data loss.
+    throw new Error(
+      `Duplicate "${idValue}" rows found in ${TABS[tab]} (${matches.length}). Nothing was changed — please check the sheet.`,
+    );
+  }
+  const index = matches[0]!;
 
   const current: Row = {};
   headers.forEach((h, i) => {
@@ -1314,6 +1352,7 @@ export async function updateRowById(
     },
   );
   invalidateWorkbookCache(spreadsheetId);
+  revalidateAfterWrite(spreadsheetId);
   return true;
 }
 
@@ -1328,17 +1367,20 @@ export async function deleteRowById(
     `/spreadsheets/${spreadsheetId}/values/${rangeFor(tab)}`,
   );
   const values = data.values ?? [];
-  const index = values.findIndex(
-    (r, i) => i > 0 && String(r[0] ?? "") === idValue,
-  );
-  if (index === -1) return false;
-  const rowNumber = index + 1;
-  const last = colLetter(HEADERS[tab].length - 1);
-  await sheetsApi(
-    `/spreadsheets/${spreadsheetId}/values/${TABS[tab]}!A${rowNumber}:${last}${rowNumber}:clear`,
-    { method: "POST", body: "{}" },
-  );
+  const indices: number[] = [];
+  values.forEach((r, i) => {
+    if (i > 0 && String(r[0] ?? "") === idValue) indices.push(i);
+  });
+  if (indices.length === 0) return false;
+  const requests = indices.map((i) => ({
+    range: `${TABS[tab]}!A${i + 1}:${colLetter(HEADERS[tab].length - 1)}${i + 1}:clear`,
+  }));
+  await sheetsApi(`/spreadsheets/${spreadsheetId}/values:batchClear`, {
+    method: "POST",
+    body: JSON.stringify({ ranges: requests.map((r) => r.range) }),
+  });
   invalidateWorkbookCache(spreadsheetId);
+  revalidateAfterWrite(spreadsheetId);
   return true;
 }
 
@@ -1358,6 +1400,7 @@ export async function replaceSettings(
   // Invalidate again after the write so a read that raced the PUT cannot leave
   // the old rates cached.
   invalidateWorkbookCache(spreadsheetId);
+  revalidateAfterWrite(spreadsheetId);
 }
 
 export async function spreadsheetTitle(spreadsheetId: string): Promise<string> {

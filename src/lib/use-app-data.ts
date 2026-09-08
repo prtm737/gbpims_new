@@ -54,10 +54,14 @@ export function useWorkbook() {
       return result;
     },
     initialData: readLocalWorkbook,
+    // The localStorage copy is only a paint booster: mark it stale immediately
+    // so a refetch is always queued. A long-frozen session cache made bills
+    // written in another tab/session vanish until a hard reload.
     initialDataUpdatedAt: 0,
-    staleTime: 60 * 1000,
+    staleTime: 0,
     gcTime: 60 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
     placeholderData: (prev) => prev,
     retry: false,
   });

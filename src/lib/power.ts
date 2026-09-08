@@ -72,6 +72,8 @@ export type PowerBill = {
   monthKey: string;
   remarks: string;
   manual: boolean;
+  /** Sheet write time — used to pick the newest copy of a duplicated bill row. */
+  timestamp: string;
 };
 
 /**
@@ -130,10 +132,20 @@ export function powerClients(wb: Workbook): PowerClient[] {
 }
 
 export function powerBills(wb: Workbook): PowerBill[] {
-  return wb.ledger
+  const bills = wb.ledger
     .filter((b) => (b["bill_id"] ?? "").trim() !== "")
-    .map(toBill)
-    .sort((a, b) => (b.billDate + b.billId).localeCompare(a.billDate + a.billId));
+    .map(toBill);
+  // Safety net for duplicate sheet rows (left by an old write race): a bill id
+  // appearing twice must never make an entry flicker in and out of the UI —
+  // keep only the newest copy of each id everywhere (lists, sums, ledger).
+  const byId = new Map<string, PowerBill>();
+  for (const b of bills) {
+    const kept = byId.get(b.billId);
+    if (!kept || b.timestamp > kept.timestamp) byId.set(b.billId, b);
+  }
+  return [...byId.values()].sort((a, b) =>
+    (b.billDate + b.billId).localeCompare(a.billDate + a.billId),
+  );
 }
 
 /** True when the bill points at a billing client that no longer exists. */
@@ -190,6 +202,7 @@ function toBill(b: Row): PowerBill {
     monthKey: billDate.slice(0, 7),
     remarks: b["remarks"] ?? "",
     manual: (b["bill_id"] ?? "").startsWith("EM-"),
+    timestamp: b["timestamp"] ?? "",
   };
 }
 

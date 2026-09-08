@@ -60,6 +60,47 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-08 — Fixed "bills vanish" (stale caches) + empty PDF archive + recovery tool
+- ROOT CAUSE of "generated bills disappeared / sometimes show, sometimes don't":
+  the app served STALE workbook copies as truth. Three layers fixed:
+  1. Cold workers served the Supabase snapshot if < 24h old — any read racing a
+     write could poison that snapshot with a PRE-write copy, hiding just-written
+     bills for up to a day. SNAPSHOT_MAX_AGE_MS 24h → 10 min.
+  2. Stale-while-revalidate window was 60 min (bills written up to an hour ago
+     invisible). WORKBOOK_STALE_MS 60 min → 5 min.
+  3. fetchWorkbook's error fallback served cache/snapshot EVEN FOR FRESH READS,
+     so getFreshWorkbook (post-write UI refresh) could silently lie. Fresh reads
+     now throw on Google errors; only non-fresh reads may fall back.
+  4. NEW revalidateAfterWrite(): after every appendRows/updateRowById/
+    deleteRowById/replaceSettings a fresh full read re-caches + re-snapshots the
+    POST-write workbook, closing the read-race poison window for good.
+- updateRowById now REFUSES (throws) when multiple rows share the id — editing
+  the wrong duplicate row is impossible. savePowerBill: edit of a bill that
+  vanished from the sheet throws instead of appending a duplicate; fresh clash
+  check now throws if the bill number belongs to ANOTHER client.
+- deleteRowById clears ALL rows sharing the id (values:batchClear), removing
+  legacy duplicate rows when a bill/client is explicitly deleted.
+- powerBills() dedupes by bill_id (newest timestamp wins) so any historical
+  duplicate rows can never make entries flicker; PowerBill gained `timestamp`.
+- PDF archive "always empty" root cause: listPdfArchive skipped month folders —
+  Supabase list returns folder pseudo-entries with id:null and the old code did
+  `if (!monthFolder.id) continue`. Rewritten walk: kind → month (id-less) →
+  files (id). PDFs were stored all along, never listed.
+- Generation-time PDF archiving errors now toast instead of silent catch
+  (billing.tsx + rent-bill-dialog.tsx).
+- Sync tenants safety: dup client rows sharing the primary id are never deleted.
+- Settings → "Recover lost rows" (admin): scanMissingRows() compares the live
+  sheet (fresh read) against up to 14 days of backups/<date>/workbook.json in
+  the gbpims-pdfs bucket across ledger/rent/labs/incubatees/clients/payments;
+  restoreMissingRows() appends only rows still absent (idempotent) and
+  verifies with a fresh read, reporting anything unrestorable. This is the tool
+  for the Sep 3 missing bills — run it and press restore if rows are missing.
+- UI: workbook query staleTime 0 + refetchOnWindowFocus (sessionStorage cache is
+  paint-only); billing engine bill list slice 40 → 200.
+- Gotcha: duplicate bill rows in the sheet are harmless now (UI dedupes) but
+  should be cleaned manually if seen — updateRowById refuses ambiguous edits.
+- Typecheck = only pre-existing __root.tsx error; vite build OK.
+
 ### 2026-09-08 — Billing engine: one client per company + arrears-note fix + PDF preview fix
 - Billing engine (and everything using `powerClients()`) now merges PowerClients
   rows that share a company name into ONE entry, like the Ledger: `PowerClient`

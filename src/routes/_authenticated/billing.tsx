@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Download, Eye, Pencil, Plus, Trash2, Users, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { AppShell } from "@/components/app-shell";
 import { ConfirmDeleteDialog, type DeleteTarget } from "@/components/confirm-delete-dialog";
@@ -368,7 +369,7 @@ function BillingPage() {
     return allBills
       .filter((b) => !b.manual)
       .filter((b) => !q || `${b.billId} ${b.clientName}`.toLowerCase().includes(q))
-      .slice(0, 40);
+      .slice(0, 200);
   }, [allBills, billSearch]);
 
   const filtered = clients.filter((c) =>
@@ -764,6 +765,7 @@ function BillingPage() {
                             monthKey: billDate.slice(0, 7),
                             remarks: "",
                             manual: false,
+                            timestamp: new Date().toISOString(),
                           };
                           saveBill.mutate(
                             {
@@ -827,8 +829,10 @@ function BillingPage() {
                                       label: finalBill.clientName,
                                       pdf_base64,
                                     });
-                                  } catch {
-                                    /* the bill itself is already saved */
+                                  } catch (err) {
+                                    toast.warning(
+                                      `Bill saved, but the PDF could not be archived: ${(err as Error).message}`,
+                                    );
                                   }
                                 })();
                               },

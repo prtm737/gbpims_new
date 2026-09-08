@@ -1,4 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
+import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -220,8 +221,10 @@ export function RentBillDialog({
                         label: tenant["company_name"] ?? "",
                         pdf_base64,
                       });
-                    } catch {
-                      /* the invoice itself is already saved */
+                    } catch (err) {
+                      toast.warning(
+                        `Invoice saved, but the PDF could not be archived: ${(err as Error).message}`,
+                      );
                     }
                   })();
                 } },

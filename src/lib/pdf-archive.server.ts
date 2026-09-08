@@ -66,34 +66,38 @@ export async function archivePdf(input: ArchivePdfInput): Promise<{ path: string
 
 export type ArchivedPdf = ArchivedPdfLike;
 
-/** Every archived PDF, oldest month first. Empty until the bucket exists. */
+/**
+ * Every archived PDF, oldest month first. Empty until the bucket exists.
+ * Supabase Storage list returns folder levels as pseudo-entries whose `id` is
+ * null, while real files carry an id — walking kind/<month>/<file> must only
+ * recurse into the id-less month folders (the old code did the exact opposite,
+ * which is why the archive looked empty even though files were stored).
+ */
 export async function listPdfArchive(): Promise<ArchivedPdfLike[]> {
   const db = await admin();
   const store = db.storage.from(BUCKET);
   const out: ArchivedPdfLike[] = [];
-  const kinds = await store.list("", {
-    limit: 100,
-    sortBy: { column: "name", order: "asc" },
-  });
-  if (kinds.error || !kinds.data) return [];
-  for (const kindFolder of kinds.data) {
-    const months = await store.list(kindFolder.name, {
+  for (const kind of ["electricity", "rent", "receipt"]) {
+    const months = await store.list(kind, {
       limit: 100,
       sortBy: { column: "name", order: "asc" },
     });
-    for (const monthFolder of months.data ?? []) {
-      if (!monthFolder.id) continue;
-      const prefix = `${kindFolder.name}/${monthFolder.name}`;
+    if (months.error || !months.data) continue;
+    for (const monthFolder of months.data) {
+      if (monthFolder.id) continue; // a stray file directly under kind/
+      if (!/^\d{4}-\d{2}$/.test(monthFolder.name)) continue;
+      const prefix = `${kind}/${monthFolder.name}`;
       const files = await store.list(prefix, {
         limit: 1000,
         sortBy: { column: "name", order: "asc" },
       });
-      for (const file of files.data ?? []) {
-        if (!file.id) continue;
+      if (files.error || !files.data) continue;
+      for (const file of files.data) {
+        if (!file.id) continue; // nested folder — ignore
         out.push({
           path: `${prefix}/${file.name}`,
           name: file.name,
-          kind: kindFolder.name,
+          kind,
           month: monthFolder.name,
           size: file.metadata?.size ?? 0,
           updatedAt: file.updated_at ?? file.created_at ?? "",
