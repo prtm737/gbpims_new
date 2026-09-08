@@ -4,7 +4,7 @@ name: Keep Render Awake
 # (Render sleeps after 15 min idle — this keeps it warm). Public repo = unlimited free runs.
 on:
   schedule:
-    - cron: "*/14 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
