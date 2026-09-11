@@ -59,6 +59,32 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-09-11 — Fixed Reports page freezing on open
+- ROOT CAUSES (all in `src/routes/_authenticated/reports.tsx`, compounding):
+  1. Static `import ... from "recharts"` (~350KB) parsed/executed on the main
+     thread inside the route chunk — page blocked before first paint, worst on
+     low-end Android. Charts now load via dynamic `import("recharts")` AFTER
+     first paint (`useRecharts` + `CollectionsChart`/`OccupancyChart` with
+     same-height `Skeleton` fallbacks, so no layout shift).
+  2. `function Body()` was nested inside `ReportsPage` → new component identity
+     every render → React unmounted/remounted all charts + tables on every
+     background refetch (`staleTime: 0` flips `isFetching` constantly).
+     Flattened to module-level `ReportBody` with `useMemo`'d `buildReportData`.
+  3. `summary()` + `monthlySplitSeries()` + `duesByKind()` each re-ran
+     `dueRows()` (O(n·m) finds) on EVERY render — now once per workbook change.
+  4. `<EntryHistoryCard/>` was mounted TWICE (grid + full-width below) — removed
+     the in-grid copy, kept the full-width one.
+  5. Audit table re-sorted with slow `localeCompare` + re-scanned
+     (`Object.values().some()`) on every render/keystroke — now `useMemo`'d on
+     `[wb]` / `[rows, needle]`, plain string compare (ISO timestamps order
+     lexicographically), stable keys (was `Math.random()` → remounted all rows
+     per render).
+- Verified: tsc via tmp deps (`tmp/opencode/gbpdeps`, standalone check config)
+  = 0 errors in reports.tsx; remaining 11 errors are pre-existing/untouched
+  files (__root.tsx ErrorComponentProps + nitro/tanstack subpath artifacts of
+  the tmp setup). Full vite build not re-run on device.
+- Gotcha: dashboard.tsx has the same nested-`Body` + unmemoized-`summary`
+  pattern — lighter (no recharts) but worth the same treatment if it janks.
 ### 2026-09-08 — Fixed "bills vanish" (stale caches) + empty PDF archive + recovery tool
 - ROOT CAUSE of "generated bills disappeared / sometimes show, sometimes don't":
   the app served STALE workbook copies as truth. Three layers fixed:
