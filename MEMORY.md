@@ -59,6 +59,86 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-11-07 — Fixed stuck "Generating…" + invoices disappearing (serial overwrite)
+- Symptoms: electricity bill generation sometimes hangs forever at "Generating…"
+  (e.g. Dream Hives); previously generated invoices vanished from Billing/Ledger
+  after "serial conflicts".
+- ROOT CAUSES:
+  1. `savePowerBill` trusted the CACHED workbook to decide whether the typed
+     invoice number already existed. Only the create path re-read the sheet; the
+     update path skipped the ownership check. Typing/picking a number owned by
+     another client took `updateRowById` and REWROTE that client's row (id,
+     name, amounts) → the old invoice disappeared. Other invoices sharing that
+     number are also hidden because `powerBills` de-dupes by bill_id.
+  2. Number allocation (fresh read) and the append were two separate operations
+     with no cross-request lock. A retry after a slow save, two tabs or two
+     staff could both allocate the same number; two rows with one id look like
+     one invoice in the UI.
+  3. No network deadlines anywhere: Google token/Sheets `fetch` and Supabase
+     calls could hang. A bill save also awaited WAL Storage uploads AND an audit
+     append AFTER the bill row was written, so a slow secondary call left the
+     button on "Generating…" with no toast and no end.
+- FIXES:
+  - `savePowerBill` now ALWAYS does one fresh sheet read under a cross-worker
+    lock, checks invoice ownership by company (merged PowerClient sibling ids
+    allowed, different company blocked), never updates another company's
+    number, allocates under the lock, and verifies an ambiguous append with a
+    fresh read before suggesting a retry. Audit is raced with an 8s budget.
+  - Lock = `app_config` row `bill_number_lock` (service-role only, 75s TTL,
+    12s wait; if the table errors for any reason other than duplicate-key it
+    logs and proceeds without the lock so billing never breaks).
+    - GOTCHA fixed during this session: the lock insert must NOT set `updated_by`
+      (the column is `uuid`, so a text token like "billing-lock" makes Postgres
+      reject the insert with 22P02). With the bad token the error fell through to
+      the "not a duplicate" branch and silently ran unlocked. Now omitted.
+  - Payment writers (`markPowerBillPaid`, `markRentInvoicePaid`, `recordPayment`)
+    now take the same billing lock, so read-modify-write balance updates can't
+    race a bill save / two concurrent receipts.
+  - Lock name/error generalised to `acquireBillingLock` /
+    "Another billing operation is in progress right now…".
+  - `nextManualBillNumber(existing, billDate)` now picks the fiscal-year prefix
+    (Apr–Mar, e.g. 26-27), takes the max within that prefix only, preserves
+    digit padding, and auto-rolls to the new FY prefix (GBP/27-28/01) when none
+    exists. Old code took max across all prefixes and the prefix of the first
+    slash id.
+  - Fetch deadlines: Google token 10s, Sheets API 20s (reads retried; writes
+    not retried because an aborted append may still land), Supabase server
+    client + auth middleware 15s. Auth timeout now gives a readable error.
+  - WAL writes are fire-and-forget (`recordWal`) — they must never delay the
+    sheet write acknowledgement.
+  - `savePowerBillFn` / `savePowerClientFn` validation limits raised from 20 to
+    100 meters/readings. A merged company like Dream Hives can own more than 20
+    lab meters, and the old limit rejected the whole bill request.
+  - `saveManualPowerEntry` now suffixes the derived `EM-<month>-<clientId>` id
+    when that id already exists (two manual entries for the same client/month
+    used to append a duplicate id) and blocks overwriting another company's
+    explicit `bill_id`.
+  - Auth proxy route got a 20s upstream timeout so a stalled Supabase login /
+    token refresh can't hang the browser.
+  - Client watchdog in `useSheetMutation` (75s default): timeout instead of an
+    endless spinner, immediately refreshes the workbook, and tells the user to
+    check the list before retrying (the write may have landed). Bulk actions
+    (rent generation, tenant sync, format/backup, orphan cleanup) pass a longer
+    `{ timeoutMs }` because they legitimately write many rows.
+  - Billing UI blocks generation when the typed invoice no. belongs to another
+    company; shows a warning banner listing duplicate bill ids already in the
+    sheet (old corruption) so they can clean up/regenerate.
+- SESSION NOTE: at the start of this session the whole `src/lib` + other
+  tracked files were missing from the working tree (`git status` showed them
+  deleted; `dist/` was stale). Restored with `git restore .` — no history was
+  rewritten. If files vanish again, check git status before assuming data loss.
+- GETTING THE MISSING INVOICES BACK: overwritten rows were replaced with the
+  other client's data — the original invoice must be regenerated. Use the new
+  duplicate banner to find the conflicting id. Deleting a bill id from the app
+  clears EVERY sheet row with that id (`deleteRowById`), so remove duplicates
+  in the sheet carefully.
+- VERIFIED: typecheck in tmp deps (`/tmp/opencode/gbpcheck`) vs a clean HEAD
+  baseline = identical 98 pre-existing errors (tmp npm resolved a newer
+  TanStack where `inputValidator` no longer exists); no new errors. ESLint on
+  changed files = prettier-only noise (repo is not prettier-clean). Full build
+  / deploy not run on device.
+  - VERIFIED (this session): `vite build` in the tmp deps copy exited 0 after
+    the manual-entry lock + payment locks + storage-client changes.
 ### 2026-09-11 — Fixed Reports page freezing on open
 - ROOT CAUSES (all in `src/routes/_authenticated/reports.tsx`, compounding):
   1. Static `import ... from "recharts"` (~350KB) parsed/executed on the main

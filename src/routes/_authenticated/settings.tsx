@@ -82,10 +82,15 @@ function SettingsPage() {
   const isAdmin = me?.role === "admin";
   const [link, setLink] = useState("");
 
-  const connect = useSheetMutation(useServerFn(connectSheet), "Workbook connected and initialised");
+  const connect = useSheetMutation(
+    useServerFn(connectSheet),
+    "Workbook connected and initialised",
+    { timeoutMs: 180_000 },
+  );
   const formatWorkbook = useSheetMutation(
     useServerFn(formatWorkbookFn),
     "Workbook colours and layout refreshed",
+    { timeoutMs: 300_000 },
   );
   const saveSettings = useSheetMutation(useServerFn(saveSettingsFn), "Settings saved");
   const setRole = useSheetMutation(useServerFn(setUserRoleFn), "Role updated");
@@ -267,7 +272,9 @@ function SettingsPage() {
 function BackupsCard({ isAdmin }: { isAdmin: boolean }) {
   const listFn = useServerFn(listBackupsFn);
   const urlFn = useServerFn(getBackupDownloadUrlFn);
-  const backupNow = useSheetMutation(useServerFn(backupNowFn), "Backup created");
+  const backupNow = useSheetMutation(useServerFn(backupNowFn), "Backup created", {
+    timeoutMs: 300_000,
+  });
   const files = useQuery({
     queryKey: ["backups"],
     queryFn: () => listFn() as Promise<{ files: { path: string; day: string; size: number; updatedAt: string }[] }>,

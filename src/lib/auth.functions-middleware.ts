@@ -7,6 +7,18 @@ function isOpaqueApiKey(value: string): boolean {
   return value.startsWith("sb_publishable_") || value.startsWith("sb_secret_");
 }
 
+// Session validation must fail fast, not hang the whole server function.
+const AUTH_FETCH_TIMEOUT_MS = 15_000;
+
+function withDeadline(init: RequestInit | undefined): RequestInit {
+  const timeout = AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS);
+  const signal =
+    init?.signal && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout;
+  return { ...(init ?? {}), signal };
+}
+
 function createBackendFetch(apiKey: string): typeof fetch {
   return (input, init) => {
     const headers = new Headers(
@@ -19,7 +31,7 @@ function createBackendFetch(apiKey: string): typeof fetch {
       headers.delete("Authorization");
     }
     headers.set("apikey", apiKey);
-    return fetch(input, { ...init, headers });
+    return fetch(input, withDeadline({ ...init, headers }));
   };
 }
 
@@ -47,10 +59,22 @@ export const requireAuth = createMiddleware({ type: "function" }).server(async (
     },
     auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
   });
-  const { data, error } = await supabase.auth.getClaims(token);
+  const { data, error } = await supabase.auth.getClaims(token).catch((cause: unknown) => {
+    console.warn(`[auth] getClaims failed: ${(cause as Error)?.message ?? cause}`);
+    return {
+      data: null,
+      error: new Error(
+        "Could not verify your session — the authentication service did not respond. Please try again.",
+      ),
+    } as const;
+  });
   const userId = data?.claims?.sub;
   if (error || !data?.claims || !userId) {
-    throw new Error("Unauthorized: Your session has expired.");
+    throw new Error(
+      error?.message.includes("did not respond")
+        ? error.message
+        : "Unauthorized: Your session has expired.",
+    );
   }
 
   return next({ context: { supabase, userId, claims: data.claims } });

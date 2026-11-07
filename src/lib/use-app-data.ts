@@ -17,6 +17,29 @@ type WorkbookResult = Awaited<ReturnType<typeof getFreshWorkbook>>;
 const CACHE_KEY = "gbpims.workbook.v1";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+// Client-side watchdog. Server calls now have their own network deadlines,
+// but a dropped connection / killed worker can still leave a mutation pending
+// forever — the button then says "Generating…" with no way out. 75s is longer
+// than every server-side deadline combined (fresh read + write + audit).
+const MUTATION_TIMEOUT_MS = 75_000;
+const TIMEOUT_MARKER = "__gbpims_mutation_timeout__";
+
+function withMutationTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(TIMEOUT_MARKER)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function readLocalWorkbook(): WorkbookResult | undefined {
   if (typeof window === "undefined") return undefined;
   try {
@@ -88,10 +111,29 @@ export async function fetchFreshWorkbook(
 export function useSheetMutation<TInput, TOutput>(
   fn: (input: TInput) => Promise<TOutput>,
   successMessage: string | ((out: TOutput) => string),
+  options: { timeoutMs?: number } = {},
 ) {
   const queryClient = useQueryClient();
+  const timeoutMs = options.timeoutMs ?? MUTATION_TIMEOUT_MS;
   return useMutation({
-    mutationFn: fn,
+    mutationFn: async (input: TInput) => {
+      try {
+        return await withMutationTimeout(fn(input), timeoutMs);
+      } catch (error) {
+        if (error instanceof Error && error.message === TIMEOUT_MARKER) {
+          // The write may still have landed after the client gave up. Pull a
+          // fresh copy before asking the user to retry (a retry with the same
+          // visible state could otherwise duplicate the record).
+          void fetchFreshWorkbook(queryClient).catch(() =>
+            queryClient.invalidateQueries({ queryKey: ["workbook"] }),
+          );
+          throw new Error(
+            `The server did not respond within ${timeoutMs / 1000} seconds. The data is being refreshed — check whether your change was saved before retrying.`,
+          );
+        }
+        throw error;
+      }
+    },
     onSuccess: (out) => {
       toast.success(
         typeof successMessage === "function" ? successMessage(out) : successMessage,

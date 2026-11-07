@@ -51,6 +51,7 @@ function RentPage() {
       }
       return parts.join(" · ");
     },
+    { timeoutMs: 240_000 },
   );
   const remove = useSheetMutation(useServerFn(deleteRentInvoiceFn), "Invoice deleted");
 

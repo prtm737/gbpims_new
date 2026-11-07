@@ -649,22 +649,76 @@ export function nextBillNumber(existing: string[], year = new Date().getFullYear
   return `${prefix}${String(max + 1).padStart(4, "0")}`;
 }
 
-/** Next number for the manual slash serial you use: GBP/26-27/NN (e.g. /43 → /44). */
-export function nextManualBillNumber(existing: string[]): string | null {
+/**
+ * Next number for the manual slash serial you use: GBP/26-27/NN (e.g. /43 → /44).
+ * The prefix is chosen for the bill's own fiscal year (Apr–Mar) when one
+ * exists, otherwise from the most recently used format. Computing the maximum
+ * across every prefix (the old behaviour) could jump to an unrelated/old
+ * series after a year rollover.
+ */
+export function nextManualBillNumber(
+  existing: string[],
+  at: Date | string = new Date(),
+): string | null {
   const slashIds = existing.filter((id) => id.includes("/"));
   if (slashIds.length === 0) return null;
-  const nums = slashIds
-    .map((id) => {
-      const last = id.split("/").pop() ?? "";
-      return Number(last) || 0;
-    })
-    .filter((n) => n > 0);
-  if (nums.length === 0) return null;
-  const max = Math.max(...nums);
-  const sample = slashIds.find((id) => id.includes("/")) ?? "GBP/26-27/01";
-  const prefix = sample.slice(0, sample.lastIndexOf("/") + 1);
-  const pad = String(max + 1).padStart(2, "0");
-  return `${prefix}${pad}`;
+
+  const date = at instanceof Date ? at : new Date(at);
+  const valid = !Number.isNaN(date.getTime());
+  const now = new Date();
+  const year = valid ? date.getFullYear() : now.getFullYear();
+  const month = valid ? date.getMonth() : now.getMonth();
+  // Indian fiscal year starts in April; 2026-11 → "26-27", 2027-02 → "26-27".
+  const fiscalStart = month >= 3 ? year : year - 1;
+  const fiscal = `${String(fiscalStart % 100).padStart(2, "0")}-${String(
+    (fiscalStart + 1) % 100,
+  ).padStart(2, "0")}`;
+
+  const byPrefix = new Map<
+    string,
+    { numbers: number[]; digits: number; lastIndex: number }
+  >();
+  slashIds.forEach((id, index) => {
+    const slash = id.lastIndexOf("/");
+    const prefix = id.slice(0, slash + 1);
+    const tail = id.slice(slash + 1);
+    const value = Number(tail);
+    if (!Number.isFinite(value) || value <= 0) return;
+    const entry = byPrefix.get(prefix) ?? { numbers: [], digits: 2, lastIndex: -1 };
+    entry.numbers.push(value);
+    entry.digits = Math.max(entry.digits, tail.length);
+    entry.lastIndex = index;
+    byPrefix.set(prefix, entry);
+  });
+  if (byPrefix.size === 0) return null;
+
+  const fiscalMatch = [...byPrefix.entries()]
+    .filter(([prefix]) => prefix.replace(/\/+$/, "").endsWith(`/${fiscal}`))
+    .sort((a, b) => b[1].lastIndex - a[1].lastIndex)[0];
+  let chosen = fiscalMatch?.[0];
+  let series = fiscalMatch?.[1];
+  if (!chosen) {
+    // No invoice yet for this fiscal year. If the latest series looks like a
+    // fiscal prefix (e.g. GBP/26-27/), roll it over to the bill's year
+    // (GBP/27-28/01) instead of continuing last year's series. Custom formats
+    // (INV-A/001) keep their existing prefix.
+    const latest = [...byPrefix.entries()].sort(
+      (a, b) => b[1].lastIndex - a[1].lastIndex,
+    )[0];
+    const prefix = latest?.[0];
+    if (!prefix || !latest) return null;
+    const fiscalPrefix = prefix.replace(/\/+$/, "").match(/^(.*\/)(\d{2})-(\d{2})$/);
+    if (fiscalPrefix?.[1] !== undefined) {
+      chosen = `${fiscalPrefix[1]}${fiscal}/`;
+      series = { numbers: [], digits: latest[1].digits, lastIndex: -1 };
+    } else {
+      chosen = prefix;
+      series = latest[1];
+    }
+  }
+  if (!chosen || !series) return null;
+  const max = series.numbers.length > 0 ? Math.max(...series.numbers) : 0;
+  return `${chosen}${String(max + 1).padStart(series.digits, "0")}`;
 }
 
 export function inr2(value: number, symbol = "₹"): string {

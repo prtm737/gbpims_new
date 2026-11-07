@@ -137,6 +137,7 @@ function LedgerPage() {
       out.removed > 0
         ? `${out.removed} orphaned record${out.removed > 1 ? "s" : ""} removed`
         : "No orphaned records found",
+    { timeoutMs: 240_000 },
   );
 
   const [query, setQuery] = useState("");

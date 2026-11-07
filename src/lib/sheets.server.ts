@@ -13,6 +13,28 @@ import {
 const API_ROOT = "https://sheets.googleapis.com/v4";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+// No outbound call may hang a server function forever: without a deadline a
+// stalled Google/Supabase connection leaves the UI on "Generating…" with no
+// response at all. Reads are retried; writes are NOT retried automatically
+// (an aborted append may still have landed).
+const TOKEN_TIMEOUT_MS = 10_000;
+const SHEETS_TIMEOUT_MS = 20_000;
+
+function isTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  );
+}
+
+function timedInit(init: RequestInit | undefined, ms: number): RequestInit {
+  const timeout = AbortSignal.timeout(ms);
+  const signal =
+    init?.signal && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout;
+  return { ...(init ?? {}), signal };
+}
 
 type ServiceAccount = { client_email: string; private_key: string };
 
@@ -100,13 +122,26 @@ async function getAccessToken(): Promise<string> {
     iat: now,
     exp: now + 3600,
   });
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
+  const res = await fetch(
+    TOKEN_URL,
+    timedInit(
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion,
+        }),
+      },
+      TOKEN_TIMEOUT_MS,
+    ),
+  ).catch((error: unknown) => {
+    if (isTimeoutError(error)) {
+      throw new Error(
+        "Google authentication timed out. Please try again — if it keeps happening, check the service account configuration.",
+      );
+    }
+    throw error;
   });
   if (!res.ok) {
     const text = await res.text();
@@ -132,20 +167,47 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function sheetsApi<T>(path: string, init?: RequestInit): Promise<T> {
   let lastBody = "";
   let lastStatus = 0;
+  const isWrite = (init?.method ?? "GET").toUpperCase() !== "GET";
 
   // Google Sheets enforces a per-minute read/write quota; retry transient
   // throttling with exponential backoff before surfacing an error.
   for (let attempt = 0; attempt < 4; attempt += 1) {
     // A 401 can mean our cached token was revoked mid-flight; refresh once.
     const token = await getAccessToken();
-    const res = await fetch(`${API_ROOT}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...(init?.headers ?? {}),
-      },
-    });
+    let res: Response;
+    try {
+      res = await fetch(
+        `${API_ROOT}${path}`,
+        timedInit(
+          {
+            ...init,
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              ...(init?.headers ?? {}),
+            },
+          },
+          SHEETS_TIMEOUT_MS,
+        ),
+      );
+    } catch (error) {
+      if (isTimeoutError(error)) {
+        // Reads are safe to retry once; a write may already have been applied,
+        // so never repeat it blindly (the caller verifies the row instead).
+        if (!isWrite && attempt < 1) {
+          await sleep(150 * 2 ** attempt + Math.floor(Math.random() * 120));
+          continue;
+        }
+        throw new Error(
+          `Google Sheets did not respond within ${SHEETS_TIMEOUT_MS / 1000}s. ${
+            isWrite
+              ? "The change may or may not have been saved — refresh the list before retrying so you don't create a duplicate."
+              : "Please check your connection and try again."
+          }`,
+        );
+      }
+      throw error;
+    }
     if (res.ok) return (await res.json()) as T;
 
     lastStatus = res.status;
@@ -1270,6 +1332,26 @@ function revalidateAfterWrite(spreadsheetId: string): void {
 
 const revalidating = new Set<string>();
 
+/**
+ * Fire-and-forget WAL record. The WAL is an extra safety copy — waiting for a
+ * Supabase Storage upload before acknowledging a sheet write made bill saves
+ * sit on "Generating…" whenever Storage was slow. Errors are already swallowed
+ * inside walWrite.
+ */
+function recordWal(
+  tab: TabKey,
+  op: "write" | "delete",
+  rowId: string,
+  before: Row | null,
+  after: Row | null,
+): void {
+  void import("./wal.server")
+    .then(({ walWrite }) => walWrite(tab, op, rowId, before, after))
+    .catch(() => {
+      /* best effort */
+    });
+}
+
 /** Make sure every lab in the roster (L01..L26) exists as a row. */
 export async function syncLabRoster(spreadsheetId: string): Promise<number> {
   const wb = await readWorkbook(spreadsheetId, { fresh: true, ensure: false });
@@ -1310,10 +1392,9 @@ export async function appendRows(
   );
   invalidateWorkbookCache(spreadsheetId);
   // WAL: record the appended rows (after-images) so nothing lands in the
-  // sheet without a durable copy.
-  const { walWrite } = await import("./wal.server");
+  // sheet without a durable copy. Not awaited — see recordWal.
   for (const row of rows) {
-    await walWrite(tab, "write", String(row[HEADERS[tab][0]!] ?? ""), null, row);
+    recordWal(tab, "write", String(row[HEADERS[tab][0]!] ?? ""), null, row);
   }
   revalidateAfterWrite(spreadsheetId);
 }
@@ -1373,8 +1454,7 @@ export async function updateRowById(
     },
   );
   invalidateWorkbookCache(spreadsheetId);
-  const { walWrite } = await import("./wal.server");
-  await walWrite(tab, "write", idValue, current, merged);
+  recordWal(tab, "write", idValue, current, merged);
   revalidateAfterWrite(spreadsheetId);
   return true;
 }
@@ -1396,15 +1476,12 @@ export async function deleteRowById(
   });
   if (indices.length === 0) return false;
   // wal before-images first: nothing gets cleared without a trace.
-  {
-    const { walWrite } = await import("./wal.server");
-    for (const i of indices) {
-      const row: Row = {};
-      HEADERS[tab].forEach((h, c) => {
-        row[h] = String(values[i]?.[c] ?? "");
-      });
-      await walWrite(tab, "delete", idValue, row, null);
-    }
+  for (const i of indices) {
+    const row: Row = {};
+    HEADERS[tab].forEach((h, c) => {
+      row[h] = String(values[i]?.[c] ?? "");
+    });
+    recordWal(tab, "delete", idValue, row, null);
   }
   const ranges = indices.map(
     (i) => `${TABS[tab]}!A${i + 1}:${colLetter(HEADERS[tab].length - 1)}${i + 1}`,

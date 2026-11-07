@@ -148,6 +148,35 @@ export function powerBills(wb: Workbook): PowerBill[] {
   );
 }
 
+/**
+ * Invoice numbers that appear on more than one ledger row. Old write races
+ * could append the same number twice; the app shows only the newest copy, so
+ * surfacing these lets the user clean up the sheet and regenerate any client
+ * invoice that was overwritten.
+ */
+export function duplicateBillIds(
+  wb: Workbook,
+): { billId: string; count: number; clients: string[] }[] {
+  const groups = new Map<string, { count: number; clients: Set<string> }>();
+  for (const row of wb.ledger) {
+    const billId = (row["bill_id"] ?? "").trim();
+    if (!billId) continue;
+    const entry = groups.get(billId) ?? { count: 0, clients: new Set<string>() };
+    entry.count += 1;
+    const name = (row["client_name"] ?? "").trim() || (row["client_id"] ?? "").trim();
+    if (name) entry.clients.add(name);
+    groups.set(billId, entry);
+  }
+  return [...groups.entries()]
+    .filter(([, entry]) => entry.count > 1)
+    .map(([billId, entry]) => ({
+      billId,
+      count: entry.count,
+      clients: [...entry.clients],
+    }))
+    .sort((a, b) => a.billId.localeCompare(b.billId));
+}
+
 /** True when the bill points at a billing client that no longer exists. */
 export function isOrphanBill(bill: PowerBill, clients: PowerClient[]): boolean {
   return !clients.some(

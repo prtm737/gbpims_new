@@ -8,8 +8,8 @@ const MAX_BYTES = 4 * 1024 * 1024;
 const PATH_RE = /^(electricity|rent|receipt)\/\d{4}-\d{2}\/[A-Za-z0-9._-]+\.pdf$/;
 
 async function admin() {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  return supabaseAdmin;
+  const { supabaseStorageAdmin } = await import("@/integrations/supabase/client.server");
+  return supabaseStorageAdmin;
 }
 
 function slug(value: string): string {

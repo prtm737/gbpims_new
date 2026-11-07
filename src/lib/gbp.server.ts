@@ -752,7 +752,17 @@ function round2(v: number): number {
  * outstanding balance is settled; with `amount` a part payment is recorded and
  * the remaining balance stays visible in the sheet and the app.
  */
-export async function markRentInvoicePaid(input: {
+export async function markRentInvoicePaid(input: MarkRentInvoicePaidInput) {
+  const id = await requireSpreadsheetId();
+  const release = await acquireBillingLock();
+  try {
+    return await markRentInvoicePaidLocked(input);
+  } finally {
+    await release();
+  }
+}
+
+type MarkRentInvoicePaidInput = {
   invoice_id: string;
   payment_date: string;
   payment_mode: string;
@@ -760,7 +770,9 @@ export async function markRentInvoicePaid(input: {
   remarks?: string | undefined;
   amount?: number | undefined;
   recorded_by: string;
-}) {
+};
+
+async function markRentInvoicePaidLocked(input: MarkRentInvoicePaidInput) {
   const id = await requireSpreadsheetId();
   await writeTabHeaders(id, "rent");
   const wb = await readWorkbook(id, { fresh: true });
@@ -919,7 +931,17 @@ export async function generateRentInvoices(month: string) {
 
 /* ----------------------------- payments --------------------------------- */
 
-export async function recordPayment(input: {
+export async function recordPayment(input: RecordPaymentInput) {
+  const id = await requireSpreadsheetId();
+  const release = await acquireBillingLock();
+  try {
+    return await recordPaymentLocked(input);
+  } finally {
+    await release();
+  }
+}
+
+type RecordPaymentInput = {
   type: "rent" | "electricity" | "deposit" | "other";
   ref_id?: string | undefined;
   incubatee_id: string;
@@ -929,7 +951,9 @@ export async function recordPayment(input: {
   reference?: string | undefined;
   notes?: string | undefined;
   recorded_by: string;
-}) {
+};
+
+async function recordPaymentLocked(input: RecordPaymentInput) {
   const id = await requireSpreadsheetId();
   const payment: Row = {
     payment_id: newId("PAY"),
@@ -1249,11 +1273,168 @@ export type PowerBillInput = {
   generated_by: string;
 };
 
+/* --------------------- bill number allocation safety --------------------- */
+
+const BILL_LOCK_KEY = "bill_number_lock";
+const BILL_LOCK_TTL_MS = 75_000;
+const BILL_LOCK_WAIT_MS = 12_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Cross-worker mutex around number allocation + append. The old code did a
+ * fresh read and then appended as two separate steps: two requests (a retry,
+ * two tabs, two staff members) could both read the same "next" number and
+ * append it twice. The UI de-duplicates by bill id, so one client's invoice
+ * silently vanished. A row in app_config (service-role only) serialises the
+ * whole read-allocate-append section across Cloudflare isolates.
+ */
+async function acquireBillingLock(): Promise<() => Promise<void>> {
+  const db = await admin();
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const deadline = Date.now() + BILL_LOCK_WAIT_MS;
+
+  for (;;) {
+    // Reap a lock abandoned by a crashed/timed-out worker.
+    await db
+      .from("app_config")
+      .delete()
+      .eq("key", BILL_LOCK_KEY)
+      .lt("updated_at", new Date(Date.now() - BILL_LOCK_TTL_MS).toISOString());
+
+    const { error } = await db.from("app_config").insert({
+      key: BILL_LOCK_KEY,
+      value: token,
+      updated_at: new Date().toISOString(),
+    });
+
+    if (!error) {
+      return async () => {
+        try {
+          await db
+            .from("app_config")
+            .delete()
+            .eq("key", BILL_LOCK_KEY)
+            .eq("value", token);
+        } catch {
+          /* the lock expires on its own */
+        }
+      };
+    }
+    // 23505 = unique violation: another worker holds the lock right now.
+    if (error.code !== "23505") {
+      // Availability beats perfect serialisation — never block billing just
+      // because the lock table is unavailable.
+      console.warn(`[billing] invoice number lock unavailable: ${error.message}`);
+      return async () => {};
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Another billing operation is in progress right now. Wait a few seconds and try again — nothing was saved by this attempt.",
+      );
+    }
+    await sleep(200 + Math.floor(Math.random() * 300));
+  }
+}
+
+function bumpBillSerial(id: string): string {
+  const match = id.match(/^(.*?)(\d+)$/);
+  if (!match) return `${id}-1`;
+  const prefix = match[1] ?? "";
+  const digits = match[2] ?? "0";
+  return `${prefix}${String(Number(digits) + 1).padStart(digits.length, "0")}`;
+}
+
+function allocateBillId(ledger: Row[], billDate: string): string {
+  const ids = ledger.map((b) => b["bill_id"] ?? "");
+  const taken = new Set(ids.filter((value) => value !== ""));
+  let candidate =
+    nextManualBillNumber(ids, billDate) ??
+    nextBillNumber(ids, new Date(billDate || Date.now()).getFullYear());
+  let guard = 0;
+  while (taken.has(candidate) && guard < 1000) {
+    candidate = bumpBillSerial(candidate);
+    guard += 1;
+  }
+  return candidate;
+}
+
+/**
+ * Manual entries derive their id from client + month. Two entries for the same
+ * client and month used to get the SAME id (the second append created a
+ * duplicate the UI hides). Suffix later ones instead.
+ */
+function deriveManualBillId(
+  ledger: Row[],
+  input: { bill_date: string },
+  clientId: string,
+): string {
+  const base = `EM-${input.bill_date.slice(0, 7)}-${clientId}`;
+  const taken = new Set(ledger.map((b) => (b["bill_id"] ?? "").trim()));
+  let candidate = base;
+  let suffix = 2;
+  while (taken.has(candidate) && suffix < 1000) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function normalizeCompany(name: string | undefined): string {
+  return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * A company occupying several labs can have several PowerClients rows; bills
+ * are allowed to move between those sibling ids, but never between companies.
+ */
+function sameBillingOwner(wb: Workbook, incomingClientId: string, rowClientId: string): boolean {
+  if (incomingClientId === rowClientId) return true;
+  const incoming = wb.clients.find((c) => c["client_id"] === incomingClientId);
+  const owner = wb.clients.find((c) => c["client_id"] === rowClientId);
+  if (!incoming || !owner) return false;
+  const incomingName = normalizeCompany(incoming["client_name"]);
+  return incomingName !== "" && incomingName === normalizeCompany(owner["client_name"]);
+}
+
 export async function savePowerBill(input: PowerBillInput) {
   const id = await requireSpreadsheetId();
-  const wb = await readWorkbook(id);
+  const release = await acquireBillingLock();
+  try {
+    return await savePowerBillLocked(id, input);
+  } finally {
+    await release();
+  }
+}
+
+async function savePowerBillLocked(id: string, input: PowerBillInput) {
+  // Always decide from the live sheet. A cached workbook can disagree with the
+  // sheet about who owns an invoice number; trusting it is what let one
+  // client's bill overwrite another's. A fresh read must fail loudly on a
+  // Google error — never silently fall back to stale data here.
+  const wb = await readWorkbook(id, { fresh: true });
   const client = wb.clients.find((c) => c["client_id"] === input.client_id);
   if (!client) throw new Error("Billing client not found.");
+
+  const requested = (input.bill_id ?? "").trim();
+  const existing = requested
+    ? wb.ledger.find((b) => (b["bill_id"] ?? "") === requested)
+    : undefined;
+
+  // Never mutate another company's invoice, even when its number was typed in
+  // manually or came from a stale "next number" suggestion.
+  if (
+    existing &&
+    !sameBillingOwner(wb, input.client_id, existing["client_id"] ?? "")
+  ) {
+    throw new Error(
+      `Invoice number ${requested} already belongs to ${existing["client_name"] || "another client"}. Pick a different number — nothing was saved.`,
+    );
+  }
+
+  let billId = existing?.["bill_id"] ?? requested;
+  if (!existing && billId === "") billId = allocateBillId(wb.ledger, input.bill_date);
+
   // The engine may override the sanctioned load for this bill; fall back to the client profile.
   const connectedLoadKw =
     input.connected_load_kw !== undefined && input.connected_load_kw > 0
@@ -1300,47 +1481,6 @@ export async function savePowerBill(input: PowerBillInput) {
     surchargeMonths: input.surcharge_months,
   });
 
-  const requested = (input.bill_id ?? "").trim();
-  let existing = requested ? wb.ledger.find((b) => (b["bill_id"] ?? "") === requested) : undefined;
-  let billId =
-    existing?.["bill_id"] ??
-    (requested !== ""
-      ? requested
-      : nextManualBillNumber(wb.ledger.map((b) => b["bill_id"] ?? "")) ??
-        nextBillNumber(
-          wb.ledger.map((b) => b["bill_id"] ?? ""),
-          new Date(input.bill_date || Date.now()).getFullYear(),
-        ));
-
-  if (!existing) {
-    // Re-check against a fresh read before writing: a stale cache can allocate
-    // a bill number that already exists, and writing it could clobber another
-    // client's bill row (reports of "bills missing from the sheet" traced back
-    // to exactly this). The fresh read must fail loudly on a Google error —
-    // never silently fall back to stale data here.
-    const freshWb = await readWorkbook(id, { fresh: true });
-    const clash = freshWb.ledger.find((b) => (b["bill_id"] ?? "") === billId);
-    if (clash) {
-      if ((clash["client_id"] ?? "") !== input.client_id) {
-        throw new Error(
-          `Bill number ${billId} already belongs to ${clash["client_name"] || "another client"}. Nothing was saved — pick a different invoice number.`,
-        );
-      }
-      if (requested !== "") {
-        existing = clash;
-        billId = clash["bill_id"] ?? billId;
-      } else {
-        billId =
-          nextManualBillNumber(freshWb.ledger.map((b) => b["bill_id"] ?? "")) ??
-          nextBillNumber(
-            freshWb.ledger.map((b) => b["bill_id"] ?? ""),
-            new Date(input.bill_date || Date.now()).getFullYear(),
-          );
-      }
-    }
-  }
-
-
   const row: Row = {
     bill_id: billId,
     client_id: input.client_id,
@@ -1384,25 +1524,52 @@ export async function savePowerBill(input: PowerBillInput) {
   if (existing) {
     const updated = await updateRowById(id, "ledger", billId, row);
     if (!updated) {
-      // The cached read said the bill exists but the sheet disagrees. Appending
+      // The fresh read said the bill exists but the sheet disagrees. Appending
       // here would create a duplicate bill row — surface the conflict instead.
       throw new Error(
         `Bill ${billId} no longer exists in the sheet. Reload the billing page and try again — nothing was overwritten.`,
       );
     }
   } else {
-    await appendRows(id, "ledger", [row]);
+    try {
+      await appendRows(id, "ledger", [row]);
+    } catch (error) {
+      // A timed-out append may still have reached Google. Give it a moment,
+      // then verify before telling the user to retry — otherwise retrying
+      // creates the same invoice twice.
+      await sleep(500);
+      const landed = await readWorkbook(id, { fresh: true })
+        .then((fresh) =>
+          fresh.ledger.some(
+            (b) =>
+              (b["bill_id"] ?? "") === billId &&
+              sameBillingOwner(fresh, input.client_id, b["client_id"] ?? ""),
+          ),
+        )
+        .catch(() => false);
+      if (!landed) {
+        throw new Error(
+          `The bill could not be confirmed: ${(error as Error).message} Refresh the bills list before retrying.`,
+        );
+      }
+    }
   }
-  await logAudit({
-    actor: input.generated_by,
-    action: existing ? "electricity bill updated" : "electricity bill created",
-    entity: "electricity",
-    entity_id: billId,
-    entity_name: client["client_name"] ?? "",
-    month: (input.bill_date || "").slice(0, 7),
-    amount: computed.total,
-    details: `${computed.totalUnits} units · period ${input.period_from} → ${input.period_to} · arrears ${computed.arrears}`,
-  });
+
+  // Auditing is secondary: a slow/failed audit write must not leave the user
+  // on "Generating…" after the invoice itself is safely in the sheet.
+  await Promise.race([
+    logAudit({
+      actor: input.generated_by,
+      action: existing ? "electricity bill updated" : "electricity bill created",
+      entity: "electricity",
+      entity_id: billId,
+      entity_name: client["client_name"] ?? "",
+      month: (input.bill_date || "").slice(0, 7),
+      amount: computed.total,
+      details: `${computed.totalUnits} units · period ${input.period_from} → ${input.period_to} · arrears ${computed.arrears}`,
+    }).catch(() => {}),
+    sleep(8_000),
+  ]);
   return { billId, total: computed.total };
 }
 
@@ -1411,7 +1578,17 @@ export async function savePowerBill(input: PowerBillInput) {
  * is settled; with `amount` a part payment is stored and the balance remains
  * visible in the sheet (amount_paid / balance columns) and in the app.
  */
-export async function markPowerBillPaid(input: {
+export async function markPowerBillPaid(input: MarkPowerBillPaidInput) {
+  const id = await requireSpreadsheetId();
+  const release = await acquireBillingLock();
+  try {
+    return await markPowerBillPaidLocked(input);
+  } finally {
+    await release();
+  }
+}
+
+type MarkPowerBillPaidInput = {
   bill_id: string;
   payment_date: string;
   payment_mode: string;
@@ -1419,7 +1596,9 @@ export async function markPowerBillPaid(input: {
   remarks?: string | undefined;
   amount?: number | undefined;
   recorded_by?: string | undefined;
-}) {
+};
+
+async function markPowerBillPaidLocked(input: MarkPowerBillPaidInput) {
   const id = await requireSpreadsheetId();
   await writeTabHeaders(id, "ledger");
   const wb = await readWorkbook(id, { fresh: true });
@@ -1512,7 +1691,7 @@ async function ensureClientForTenant(wb: Workbook, incubateeId: string): Promise
  * Manual electricity ledger entry: the bill was raised outside the app, so the
  * officer only records the client, period and amounts.
  */
-export async function saveManualPowerEntry(input: {
+export type ManualPowerEntryInput = {
   bill_id?: string | undefined;
   client_id?: string | undefined;
   incubatee_id?: string | undefined;
@@ -1527,8 +1706,19 @@ export async function saveManualPowerEntry(input: {
   total_amount: number;
   remarks?: string | undefined;
   generated_by: string;
-}) {
+};
+
+export async function saveManualPowerEntry(input: ManualPowerEntryInput) {
   const id = await requireSpreadsheetId();
+  const release = await acquireBillingLock();
+  try {
+    return await saveManualPowerEntryLocked(id, input);
+  } finally {
+    await release();
+  }
+}
+
+async function saveManualPowerEntryLocked(id: string, input: ManualPowerEntryInput) {
   await writeTabHeaders(id, "ledger");
   const wb = await readWorkbook(id, { fresh: true });
   // A tenant can be billed straight away: if they have no billing client row
@@ -1544,7 +1734,15 @@ export async function saveManualPowerEntry(input: {
   const existing = input.bill_id
     ? wb.ledger.find((b) => b["bill_id"] === input.bill_id)
     : undefined;
-  const billId = existing?.["bill_id"] ?? `EM-${input.bill_date.slice(0, 7)}-${clientId}`;
+  if (
+    existing &&
+    !sameBillingOwner(wb, clientId, existing["client_id"] ?? "")
+  ) {
+    throw new Error(
+      `Invoice number ${input.bill_id} already belongs to ${existing["client_name"] || "another client"}. Pick a different number — nothing was saved.`,
+    );
+  }
+  const billId = existing?.["bill_id"] ?? deriveManualBillId(wb.ledger, input, clientId);
   const total = Math.max(0, input.total_amount);
   const priorPaid = num(existing?.["amount_paid"]);
 

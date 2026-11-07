@@ -7,8 +7,8 @@ const BACKUP_PREFIX = "backups";
 const KEEP_DAYS = 90;
 
 async function admin() {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  return supabaseAdmin;
+  const { supabaseStorageAdmin } = await import("@/integrations/supabase/client.server");
+  return supabaseStorageAdmin;
 }
 
 function today(): string {

@@ -479,7 +479,7 @@ const powerClientSchema = z.object({
         meterNo: z.string().trim().max(60),
       }),
     )
-    .max(20),
+    .max(100),
 });
 
 export const savePowerClientFn = createServerFn({ method: "POST" })
@@ -522,7 +522,7 @@ export const savePowerBillFn = createServerFn({ method: "POST" })
               presReading: z.number().min(0).max(100000000),
             }),
           )
-          .max(20),
+          .max(100),
         include_ac_units: z.boolean().default(false),
         ac_units: z.number().min(0).max(1000000).optional(),
 

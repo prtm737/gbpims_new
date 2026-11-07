@@ -43,6 +43,8 @@ async function forwardAuthRequest({ request }: { request: Request }) {
       method: request.method,
       headers,
       ...(body ? { body } : {}),
+      // Don't let a stalled Supabase auth call hang sign-in / token refresh.
+      signal: AbortSignal.timeout(20_000),
     });
     const responseHeaders = new Headers();
     for (const name of ["content-type", "content-range", "x-supabase-api-version"]) {

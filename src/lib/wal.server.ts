@@ -6,8 +6,8 @@
 const BUCKET = "gbpims-pdfs";
 
 async function admin() {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  return supabaseAdmin;
+  const { supabaseStorageAdmin } = await import("@/integrations/supabase/client.server");
+  return supabaseStorageAdmin;
 }
 
 export type WalOperation = "write" | "delete";

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Download, Eye, Pencil, Plus, Trash2, Users, Zap } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/app-shell";
@@ -37,6 +37,7 @@ import {
 } from "@/lib/gbp.functions";
 import {
   billPreview,
+  duplicateBillIds,
   lastReadings,
   outstandingArrears,
   powerBills,
@@ -88,6 +89,21 @@ const plusDays = (days: number) =>
 
 type MeterDraft = { id: string; labName: string; meterNo: string };
 
+/** Live elapsed time so "Generating…" never looks frozen while the sheet saves. */
+function PendingSaveHint() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <p className="mt-2 text-center text-xs text-muted-foreground">
+      Saving to the Google Sheet… {seconds}s. This usually takes a few seconds — please don't
+      close or reload this page.
+    </p>
+  );
+}
+
 function BillingPage() {
   const { wb, role, fallback } = useWorkbookState();
   const writable = canWrite(role);
@@ -112,6 +128,7 @@ function BillingPage() {
         ? `Tenant sync — ${bits.join(" · ")}`
         : "Every active tenant already has a billing client";
     },
+    { timeoutMs: 240_000 },
   );
   const saveBill = useSheetMutation(
     useServerFn(savePowerBillFn),
@@ -248,13 +265,22 @@ function BillingPage() {
         new Date(billDate || Date.now()).getFullYear(),
       )
     : "GBP-0000";
-  const nextManual = wb ? nextManualBillNumber(wb.ledger.map((b) => b["bill_id"] ?? "")) : null;
+  const nextManual = wb
+    ? nextManualBillNumber(wb.ledger.map((b) => b["bill_id"] ?? ""), billDate)
+    : null;
   // Manual slash serial (GBP/26-27/..) is your primary numbering — keep it.
   // Leave blank to auto-assign, or type the next manual number. Duplicates are blocked.
   const billNo = editingBillId || invoiceNo.trim() || nextManual || nextBill;
-  const duplicateNo =
-    invoiceNo.trim() !== "" &&
-    (wb?.ledger ?? []).some((b) => (b["bill_id"] ?? "") === invoiceNo.trim());
+  const duplicateRow = invoiceNo.trim()
+    ? (wb?.ledger ?? []).find((b) => (b["bill_id"] ?? "") === invoiceNo.trim())
+    : undefined;
+  // Same invoice number, same company (possibly a merged sibling client) is an
+  // intentional update. Same number belonging to a DIFFERENT company must never
+  // be allowed — it used to overwrite that client's bill row.
+  const duplicateOtherClient =
+    duplicateRow !== undefined &&
+    selected !== undefined &&
+    !selected.clientIds.includes(duplicateRow["client_id"] ?? "");
 
   const profile = parkProfile(wb?.settings ?? {});
 
@@ -368,6 +394,7 @@ function BillingPage() {
   }
 
   const allBills = useMemo(() => (wb ? powerBills(wb) : []), [wb]);
+  const duplicates = useMemo(() => (wb ? duplicateBillIds(wb) : []), [wb]);
   const visibleBills = useMemo(() => {
     const q = billSearch.trim().toLowerCase();
     return allBills
@@ -522,8 +549,10 @@ function BillingPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   {editingBillId
                     ? "Invoice number is locked while editing an existing bill."
-                    : duplicateNo
-                    ? "This invoice number already exists — saving will update that existing bill (same number cannot be used for 2 clients)."
+                    : duplicateOtherClient
+                    ? `This number already belongs to ${duplicateRow?.["client_name"] || "another client"}. Generation is blocked — pick a different invoice number.`
+                    : duplicateRow
+                    ? "This invoice number already exists for this client — saving will update that bill."
                     : nextManual
                     ? `Your manual serial — next is ${nextManual}. Type it, or leave blank to auto-use ${nextManual}.`
                     : `Leave blank to auto-use ${nextBill}.`}
@@ -732,7 +761,11 @@ function BillingPage() {
                     {writable && (
                       <Button
                         className="mt-3 w-full"
-                        disabled={saveBill.isPending || readings.length === 0}
+                        disabled={
+                          saveBill.isPending ||
+                          readings.length === 0 ||
+                          duplicateOtherClient
+                        }
                         onClick={() => {
                           if (!preview) return;
                           const billSnapshot: PowerBill = {
@@ -856,6 +889,7 @@ function BillingPage() {
 
                       </Button>
                     )}
+                    {saveBill.isPending && <PendingSaveHint />}
                     {generatedBill && (
                       <div className="mt-3 rounded-lg border border-primary/25 bg-primary/5 p-3">
                         <p className="text-sm font-semibold text-foreground">
@@ -903,6 +937,26 @@ function BillingPage() {
                 onChange={(e) => setBillSearch(e.target.value)}
               />
             </div>
+            {duplicates.length > 0 && (
+              <div className="border-b border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm">
+                <p className="font-semibold">
+                  {duplicates.length} invoice number{duplicates.length > 1 ? "s" : ""} appear
+                  on more than one ledger row
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Left over from an old save conflict. The list below shows the newest copy
+                  only. Check the Google Sheet and remove the extra row; any invoice that was
+                  overwritten should be generated again.
+                </p>
+                <p className="mt-1 text-xs font-medium">
+                  {duplicates
+                    .slice(0, 8)
+                    .map((d) => `${d.billId} (${d.clients.join(" / ") || "unknown"})`)
+                    .join(" · ")}
+                  {duplicates.length > 8 ? ` · +${duplicates.length - 8} more` : ""}
+                </p>
+              </div>
+            )}
             <div className="divide-y divide-border">
               {visibleBills.map((b) => (
                 <div key={b.billId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">

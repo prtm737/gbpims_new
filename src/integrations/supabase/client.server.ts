@@ -9,7 +9,24 @@ function isNewSupabaseApiKey(value: string): boolean {
   return value.startsWith("sb_publishable_") || value.startsWith("sb_secret_");
 }
 
-function createSupabaseFetch(supabaseKey: string): typeof fetch {
+// A stalled Supabase connection must never hang a server function forever.
+// 15s is generous for a single query/upload but short enough that the user
+// gets a real error (and can retry) instead of an endless spinner. Storage
+// uploads (WAL, backups, PDF archives) can legitimately take longer on slow
+// links, so those go through a separate client with a roomier budget.
+const SUPABASE_FETCH_TIMEOUT_MS = 15_000;
+const STORAGE_FETCH_TIMEOUT_MS = 60_000;
+
+function withDeadline(init: RequestInit | undefined, deadlineMs: number = SUPABASE_FETCH_TIMEOUT_MS): RequestInit {
+  const timeout = AbortSignal.timeout(deadlineMs);
+  const signal =
+    init?.signal && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout;
+  return { ...(init ?? {}), signal };
+}
+
+function createSupabaseFetch(supabaseKey: string, deadlineMs: number = SUPABASE_FETCH_TIMEOUT_MS): typeof fetch {
   return (input, init) => {
     const headers = new Headers(
       typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined,
@@ -28,11 +45,11 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
     }
 
     headers.set("apikey", supabaseKey);
-    return fetch(input, { ...init, headers });
+    return fetch(input, withDeadline({ ...init, headers }, deadlineMs));
   };
 }
 
-function createSupabaseAdminClient() {
+function createSupabaseAdminClient(deadlineMs: number = SUPABASE_FETCH_TIMEOUT_MS) {
   const SUPABASE_URL = process.env["SUPABASE_URL"];
   const SUPABASE_SERVICE_ROLE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"];
 
@@ -48,7 +65,7 @@ function createSupabaseAdminClient() {
 
   return createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     global: {
-      fetch: createSupabaseFetch(SUPABASE_SERVICE_ROLE_KEY),
+      fetch: createSupabaseFetch(SUPABASE_SERVICE_ROLE_KEY, deadlineMs),
     },
     auth: {
       storage: undefined,
@@ -59,6 +76,7 @@ function createSupabaseAdminClient() {
 }
 
 let _supabaseAdmin: ReturnType<typeof createSupabaseAdminClient> | undefined;
+let _supabaseStorageAdmin: ReturnType<typeof createSupabaseAdminClient> | undefined;
 
 // Server-side Supabase client with service role - bypasses RLS
 // SECURITY: Only use this for trusted server-side operations, never expose to client code
@@ -68,5 +86,14 @@ export const supabaseAdmin = new Proxy({} as ReturnType<typeof createSupabaseAdm
   get(_, prop, receiver) {
     if (!_supabaseAdmin) _supabaseAdmin = createSupabaseAdminClient();
     return Reflect.get(_supabaseAdmin, prop, receiver);
+  },
+});
+
+// Storage operations (WAL, backups, PDF archive) routinely take longer than a
+// plain query to finish on slow links, so they get a roomier deadline.
+export const supabaseStorageAdmin = new Proxy({} as ReturnType<typeof createSupabaseAdminClient>, {
+  get(_, prop, receiver) {
+    if (!_supabaseStorageAdmin) _supabaseStorageAdmin = createSupabaseAdminClient(STORAGE_FETCH_TIMEOUT_MS);
+    return Reflect.get(_supabaseStorageAdmin, prop, receiver);
   },
 });
