@@ -49,9 +49,18 @@ function AuthPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
-    void authClient.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: "/dashboard", replace: true });
-    });
+    let cancelled = false;
+    authClient.auth
+      .getSession()
+      .then(({ data }) => {
+        if (!cancelled && data.session) navigate({ to: "/dashboard", replace: true });
+      })
+      .catch((error) => {
+        console.error("[auth] session lookup failed", error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [navigate]);
 
   async function submit(e: React.FormEvent) {

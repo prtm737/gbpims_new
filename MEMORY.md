@@ -59,6 +59,26 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-11-23 — Live login error "This page didn't load" + Supabase pause keep-alive
+- Symptoms: `https://gbp.gbpims.workers.dev` login showed the root error UI
+  ("This page didn't load"); Supabase sent a pause warning even though a keep-alive
+  bot supposedly pinged the DB daily.
+- Root causes addressed:
+  1. Auth guard (`src/routes/_authenticated/route.tsx`) let a failed
+     `authClient.auth.getSession()` lookup escape as a router error → root error
+     boundary. Now caught → falls through to the signed-out redirect to `/auth`.
+     Auth page session lookup (`src/routes/auth.tsx`) now catches lookup failures
+     instead of leaving unhandled rejections on the auth screen.
+  2. Keep-alive wiring was stale: the "Keep Render Awake" workflow pinged the
+     retired `https://gbpims.onrender.com` host. It now pings the live worker's
+     public keep-alive endpoint. Added `src/routes/api/public/keepalive.ts`
+     (worker → Supabase REST `user_roles` ping w/ service key, 20s deadline).
+- Note: the previously-deployed bundle WAS confirmed to contain the baked-in
+  `VITE_SUPABASE_*` values (no missing-env crash on that build path) — keep the
+  `VARS=SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY` + workflow secret mapping intact.
+- Follow-up: run `SHOW_SERVER_ERRORS=1` on the worker once if the error recurs, to
+  pull the real stack from `renderErrorPage`.
+
 ### 2026-11-07 — Fixed stuck "Generating…" + invoices disappearing (serial overwrite)
 - Symptoms: electricity bill generation sometimes hangs forever at "Generating…"
   (e.g. Dream Hives); previously generated invoices vanished from Billing/Ledger

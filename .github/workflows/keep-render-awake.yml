@@ -1,7 +1,9 @@
 name: Keep Render Awake
 
-# Pings https://gbpims.onrender.com every 14 min so the free instance never sleeps
-# (Render sleeps after 15 min idle — this keeps it warm). Public repo = unlimited free runs.
+# Pings the Cloudflare Worker keep-alive endpoint every 5 min so the Supabase
+# free project never idles into pause (free tier pauses after ~7 days inactive).
+# The live app itself runs on Cloudflare Workers (always-on, no sleep) — the old
+# Render target is retired, so the ping now hits the worker instead.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -11,9 +13,9 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Render
+      - name: Ping Cloudflare Worker keep-alive
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" https://gbpims.onrender.com/ || echo "000")
-          echo "HTTP $code"
-          # Also hit the health endpoint to warm server functions
-          curl -s https://gbpims.onrender.com/auth -o /dev/null || true
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://gbp.gbpims.workers.dev/api/public/keepalive || echo "000")
+          echo "Keep-alive HTTP $code"
+          # Warm the auth proxy health endpoint too
+          curl -s -o /dev/null -w "Auth health HTTP %{http_code}\n" "https://gbp.gbpims.workers.dev/api/public/auth-proxy?path=/auth/v1/health" || true
