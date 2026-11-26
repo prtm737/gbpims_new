@@ -80,6 +80,15 @@ push, no rebase/squash of pushed commits).
   local `vite build` (cloudflare-module) output has zero `inputValidator`
   references and its index + workbook-state + dashboard chunks import cleanly
   under jsdom. Deploy via normal push to main (no history rewrite).
+- DEPLOYED 2026-11-26 (CI run 45764198960, success). Live bundle
+  index-C2yJyou1.js / workbook-state-DhRD7XNb.js: dashboard chunk imports
+  cleanly under jsdom and hydrates to the app shell (no error page); only the
+  expected "Could not read the workbook" fallback appears in the harness
+  because Node cannot resolve relative `/_serverFn/` URLs.
+- Gotcha: the workflow has no package-lock, so CI dependency resolution is
+  governed by package.json ranges. Keep the TanStack trio pinned; if they are
+  widened again, re-check `.validator` vs `.inputValidator` (renamed in the
+  1.169.x line) and run a chunk-load smoke test before shipping.
 
 ### 2026-11-23 — Live login error "This page didn't load" + Supabase pause keep-alive
 - Symptoms: `https://gbp.gbpims.workers.dev` login showed the root error UI
