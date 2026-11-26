@@ -69,7 +69,7 @@ export const listBackupsFn = createServerFn({ method: "GET" })
 
 export const getBackupDownloadUrlFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ path: z.string().trim().min(10).max(200) }).parse(data),
   )
   .handler(async ({ data }) => {
@@ -100,7 +100,7 @@ export const scanMissingRowsFn = createServerFn({ method: "GET" })
 
 export const restoreMissingRowsFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         ids: z
@@ -139,7 +139,7 @@ export const backfillAuditFn = createServerFn({ method: "POST" })
 
 export const connectSheet = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: { link: string }) =>
+  .validator((data: { link: string }) =>
     z.object({ link: z.string().trim().min(10).max(500) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -181,7 +181,7 @@ const labSchema = z.object({
 
 export const saveLabFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) => labSchema.parse(data))
+  .validator((data: unknown) => labSchema.parse(data))
   .handler(async ({ data, context }) => {
     const { requireWrite, saveLab } = await import("./gbp.server");
     const role = await requireWrite(context.supabase, context.userId);
@@ -190,7 +190,7 @@ export const saveLabFn = createServerFn({ method: "POST" })
 
 export const deleteLabFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ lab_id: z.string().trim().min(1).max(20) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -223,7 +223,7 @@ const incubateeSchema = z.object({
 
 export const saveIncubateeFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) => incubateeSchema.parse(data))
+  .validator((data: unknown) => incubateeSchema.parse(data))
   .handler(async ({ data, context }) => {
     const { requireWrite, saveIncubatee } = await import("./gbp.server");
     const role = await requireWrite(context.supabase, context.userId);
@@ -232,7 +232,7 @@ export const saveIncubateeFn = createServerFn({ method: "POST" })
 
 export const vacateIncubateeFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: { incubatee_id: string }) =>
+  .validator((data: { incubatee_id: string }) =>
     z.object({ incubatee_id: z.string().trim().min(1).max(40) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -245,7 +245,7 @@ const monthSchema = z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) });
 
 export const deleteIncubateeFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: { incubatee_id: string }) =>
+  .validator((data: { incubatee_id: string }) =>
     z.object({ incubatee_id: z.string().trim().min(1).max(40) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -274,7 +274,7 @@ const rentInvoiceSchema = z.object({
 
 export const saveRentInvoiceFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) => rentInvoiceSchema.parse(data))
+  .validator((data: unknown) => rentInvoiceSchema.parse(data))
   .handler(async ({ data, context }) => {
     const { requireWrite, saveRentInvoice } = await import("./gbp.server");
     const role = await requireWrite(context.supabase, context.userId);
@@ -289,7 +289,7 @@ export const saveRentInvoiceFn = createServerFn({ method: "POST" })
 
 export const markRentPaidFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         invoice_id: z.string().trim().min(1).max(80),
@@ -320,7 +320,7 @@ export const markRentPaidFn = createServerFn({ method: "POST" })
 
 export const saveManualRentEntryFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         invoice_id: z.string().trim().max(80).optional(),
@@ -358,7 +358,7 @@ export const saveManualRentEntryFn = createServerFn({ method: "POST" })
 
 export const updateLedgerRemarksFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         kind: z.enum(["rent", "electricity"]),
@@ -378,7 +378,7 @@ export const updateLedgerRemarksFn = createServerFn({ method: "POST" })
 
 export const deleteRentInvoiceFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ invoice_id: z.string().trim().min(1).max(80) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -397,7 +397,7 @@ export const deleteRentInvoiceFn = createServerFn({ method: "POST" })
 
 export const generateRentFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: { month: string }) => monthSchema.parse(data))
+  .validator((data: { month: string }) => monthSchema.parse(data))
   .handler(async ({ data, context }) => {
     const { generateRentInvoices, requireWrite } = await import("./gbp.server");
     await requireWrite(context.supabase, context.userId);
@@ -425,7 +425,7 @@ export const cleanupOrphansFn = createServerFn({ method: "POST" })
 
 export const recordPaymentFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         type: z.enum(["rent", "electricity", "deposit", "other"]),
@@ -450,7 +450,7 @@ export const recordPaymentFn = createServerFn({ method: "POST" })
 
 export const saveSettingsFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ values: z.record(z.string(), z.string().max(200)) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -484,7 +484,7 @@ const powerClientSchema = z.object({
 
 export const savePowerClientFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) => powerClientSchema.parse(data))
+  .validator((data: unknown) => powerClientSchema.parse(data))
   .handler(async ({ data, context }) => {
     const { requireWrite, savePowerClient } = await import("./gbp.server");
     await requireWrite(context.supabase, context.userId);
@@ -493,7 +493,7 @@ export const savePowerClientFn = createServerFn({ method: "POST" })
 
 export const deletePowerClientFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ client_id: z.string().trim().min(1).max(40) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -504,7 +504,7 @@ export const deletePowerClientFn = createServerFn({ method: "POST" })
 
 export const savePowerBillFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         bill_id: z.string().trim().max(40).optional(),
@@ -547,7 +547,7 @@ export const savePowerBillFn = createServerFn({ method: "POST" })
 
 export const markPowerBillPaidFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         bill_id: z.string().trim().min(1).max(40),
@@ -578,7 +578,7 @@ export const markPowerBillPaidFn = createServerFn({ method: "POST" })
 
 export const saveManualPowerEntryFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         bill_id: z.string().trim().max(60).optional(),
@@ -617,7 +617,7 @@ export const saveManualPowerEntryFn = createServerFn({ method: "POST" })
 
 export const deletePowerBillFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ bill_id: z.string().trim().min(1).max(40) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -652,7 +652,7 @@ export const listStaffFn = createServerFn({ method: "GET" })
 
 export const setUserRoleFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         userId: z.string().uuid(),
@@ -670,7 +670,7 @@ export const setUserRoleFn = createServerFn({ method: "POST" })
 
 export const archivePdfFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         kind: z.enum(["electricity", "rent", "receipt"]),
@@ -697,7 +697,7 @@ export const listPdfArchiveFn = createServerFn({ method: "GET" })
 
 export const getPdfDownloadUrlFn = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ path: z.string().trim().min(5).max(300) }).parse(data),
   )
   .handler(async ({ data }) => {

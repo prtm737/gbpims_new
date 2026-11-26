@@ -59,6 +59,28 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-11-26 — Fixed real cause of live "This page didn't load" (TanStack API drift)
+- Symptom persisted on https://gbp.gbpims.workers.dev AFTER the da092ed auth-guard fix:
+  opening /auth looked fine (SSR form), but signing in / any authenticated route
+  crashed into the root error UI. Supabase proxy, keepalive, SSR and client
+  hydration of /auth were all verified healthy.
+- ROOT CAUSE: CI does `npm install --legacy-peer-deps` with NO package-lock and
+  caret ranges, so it resolved a newer TanStack Start than `bun.lock` pins.
+  In that version `createServerFn().inputValidator()` was renamed to
+  `.validator()`. `src/lib/gbp.functions.ts` still used `.inputValidator`, so the
+  lazy `workbook-state` chunk threw at module load:
+  `TypeError: S(...).middleware(...).inputValidator is not a function`.
+  /auth never imports it → login form renders; /dashboard does → error page.
+  Reproduced by running the deployed chunks under jsdom.
+- FIX: all 25 `.inputValidator(` → `.validator(` in gbp.functions.ts (the old
+  pinned version supports BOTH names, so this is backward compatible), and
+  pinned `@tanstack/react-start` 1.168.32 / `react-router` 1.170.18 /
+  `router-plugin` 1.168.23 (exact, matching bun.lock) so CI can't drift again.
+- VERIFIED: tsc against newer deps = only 4 pre-existing type-only errors;
+  local `vite build` (cloudflare-module) output has zero `inputValidator`
+  references and its index + workbook-state + dashboard chunks import cleanly
+  under jsdom. Deploy via normal push to main (no history rewrite).
+
 ### 2026-11-23 — Live login error "This page didn't load" + Supabase pause keep-alive
 - Symptoms: `https://gbp.gbpims.workers.dev` login showed the root error UI
   ("This page didn't load"); Supabase sent a pause warning even though a keep-alive
