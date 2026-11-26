@@ -78,11 +78,13 @@ push, no rebase/squash of pushed commits).
   PUTs two daily crons (`13 3 * * *`, `43 15 * * *`) to the schedules endpoint
   and logs the registered crons. GitHub workflow display name renamed
   "Keep Supabase Alive". Cron changes can take ~15 min to propagate.
-- VERIFY: CI deploy log prints
-  `Cron schedules registered: 13 3 * * *, 43 15 * * *`; Cloudflare dashboard →
-  Worker → Settings → Trigger Events shows cron runs. If a pause warning was
-  already issued, any DB activity in the following week clears it — visiting
-  the Supabase dashboard/project also counts as activity.
+- VERIFY: deployed 2026-11-26 (CI run 45766445443, success) — log shows
+  `Cron schedules registered: 13 3 * * *, 43 15 * * *`. Live
+  `/api/public/keepalive` still 200 (`{"ok":true,...}`); `/` and `/auth` 200.
+  To confirm the scheduled path later: Cloudflare dashboard → Worker →
+  Settings → Trigger Events (cron changes can take ~15 min to propagate). If a
+  pause warning was already issued, any DB activity in the following week
+  clears it — visiting the Supabase dashboard/project also counts as activity.
 
 ### 2026-11-26 — Fixed real cause of live "This page didn't load" (TanStack API drift)
 - Symptom persisted on https://gbp.gbpims.workers.dev AFTER the da092ed auth-guard fix:
