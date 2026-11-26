@@ -1,4 +1,4 @@
-name: Keep Render Awake
+name: Keep Supabase Alive
 
 # Pings the Cloudflare Worker keep-alive endpoint every 5 min so the Supabase
 # free project never idles into pause (free tier pauses after ~7 days inactive).

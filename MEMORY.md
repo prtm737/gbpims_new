@@ -59,6 +59,31 @@ push, no rebase/squash of pushed commits).
   `src/lib/lovable-error-reporting.ts`.
 
 ## Changelog
+### 2026-11-26 — Supabase pause warning: cron trigger was never registered
+- User got a Supabase "project will be paused" email even though a keep-alive
+  bot supposedly pinged daily. Investigation of the whole chain:
+  1. Render was retired on 2026-09-08 (`0ba69f2`), but the GitHub workflow kept
+     pinging the dead `gbpims.onrender.com` URL until 2026-11-23 (`da092ed`).
+     Only from `da092ed` did pings reach the worker and issue a real Supabase
+     REST `SELECT` on `user_roles` (verified live: `{"ok":true,...}`, HTTP 200).
+  2. `scripts/deploy-cloudflare.mjs` passed `triggers: { cron: [...] }` inside
+     Worker **version metadata**, which Cloudflare silently ignores. Cron
+     triggers are managed separately via
+     `PUT /accounts/{account_id}/workers/scripts/{script_name}/schedules`
+     with a body of `[{ "cron": "..." }, ...]`. So the intended daily scheduled
+     keep-alive (`src/server-keepalive.ts` → `cloudflare:scheduled`) never ran.
+     The only real keep-alive was the GitHub schedule, which GitHub throttles
+     from `*/5` to ~2–4 runs/day.
+- FIX: deploy script no longer puts `triggers` in metadata; after deployment it
+  PUTs two daily crons (`13 3 * * *`, `43 15 * * *`) to the schedules endpoint
+  and logs the registered crons. GitHub workflow display name renamed
+  "Keep Supabase Alive". Cron changes can take ~15 min to propagate.
+- VERIFY: CI deploy log prints
+  `Cron schedules registered: 13 3 * * *, 43 15 * * *`; Cloudflare dashboard →
+  Worker → Settings → Trigger Events shows cron runs. If a pause warning was
+  already issued, any DB activity in the following week clears it — visiting
+  the Supabase dashboard/project also counts as activity.
+
 ### 2026-11-26 — Fixed real cause of live "This page didn't load" (TanStack API drift)
 - Symptom persisted on https://gbp.gbpims.workers.dev AFTER the da092ed auth-guard fix:
   opening /auth looked fine (SSR form), but signing in / any authenticated route

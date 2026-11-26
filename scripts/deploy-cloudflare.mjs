@@ -257,8 +257,10 @@ const metadata = {
     ...(WRANGLER.assets?.binding ? [{ type: "assets", name: WRANGLER.assets.binding }] : []),
     ...Object.entries(plainVars).map(([name, text]) => ({ type: "plain_text", name, text })),
   ],
-  // Daily cron so the Supabase keep-alive plugin runs once a day (free tier).
-  triggers: { cron: ["13 3 * * *"] },
+  // NOTE: cron triggers are NOT part of version metadata. They must be set
+  // separately via the /schedules endpoint (see step 8 below); the old
+  // `triggers` field here was silently ignored, so the scheduled keep-alive
+  // never ran.
   assets: { jwt: completionJwt },
   observability: { enabled: true },
 };
@@ -319,6 +321,24 @@ await cf(`/accounts/${ACCOUNT}/workers/scripts/${WORKER_NAME}/subdomain`, {
 
 console.log(`\nDeployed! Live at: https://${WORKER_NAME}.${subdomain.subdomain}.workers.dev`);
 console.log(`Short URL: https://${WORKER_NAME}.${subdomain.subdomain}.workers.dev (set WORKER_NAME=gbp for even shorter)`);
+
+// 8) Register the cron triggers. This is a separate API from script/version
+// upload: cron triggers live on the script and are replaced wholesale here.
+// Two daily runs (03:13 and 15:43 UTC) keep the free Supabase project active;
+// the `cloudflare:scheduled` Nitro hook in src/server-keepalive.ts issues the
+// actual REST query. Propagation can take up to 15 minutes after the change.
+const CRON_SCHEDULES = ["13 3 * * *", "43 15 * * *"];
+const schedules = await cf(
+  `/accounts/${ACCOUNT}/workers/scripts/${WORKER_NAME}/schedules`,
+  {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(CRON_SCHEDULES.map((cron) => ({ cron }))),
+  },
+);
+console.log(
+  `Cron schedules registered: ${(schedules.schedules ?? []).map((s) => s.cron).join(", ")}`,
+);
 
 // Optional: bind custom domain for tiny URL (e.g. gbpims.yourdomain.com)
 const customDomain = process.env["CLOUDFLARE_CUSTOM_DOMAIN"];
